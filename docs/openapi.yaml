@@ -1,0 +1,133 @@
+openapi: 3.0.0
+info:
+  title: SFW Call Intelligence Bridge
+  description: Real-time call context for SFW Construction sales coaching via ChatGPT
+  version: 1.0.0
+servers:
+  - url: https://sfw-call-bridge.vercel.app
+paths:
+  /api/calls/active:
+    get:
+      operationId: getActiveCalls
+      summary: List all active calls across the SFW sales team
+      description: Returns all currently active phone calls with caller info and rep assignment. Use this to see who is on the phone right now.
+      responses:
+        "200":
+          description: Active calls with caller info and rep assignment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calls:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Call"
+                  count:
+                    type: integer
+  /api/calls/latest:
+    get:
+      operationId: getLatestCall
+      summary: Get the most recent or current call for a rep
+      description: Returns the current or most recent call for a specific sales rep. Use this when a rep asks for context on their current call.
+      parameters:
+        - name: rep
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Extension number of the rep (e.g. "119" for Doug Stoker, "118" for Jacob Hair)
+      responses:
+        "200":
+          description: Latest call context for the specified rep
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call:
+                    $ref: "#/components/schemas/Call"
+                  transcript:
+                    type: string
+                    nullable: true
+  /api/calls/{sessionId}/context:
+    get:
+      operationId: getCallContext
+      summary: Get full context for a specific call including transcript
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Call metadata and transcript
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  call:
+                    $ref: "#/components/schemas/Call"
+                  transcript:
+                    type: string
+                    nullable: true
+  /api/calls/{sessionId}/transcript:
+    get:
+      operationId: getCallTranscript
+      summary: Get transcript for a call
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transcript text
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  transcript:
+                    type: string
+components:
+  schemas:
+    Call:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        status:
+          type: string
+          enum: [Proceeding, Answered, Hold, Disconnected]
+        direction:
+          type: string
+          enum: [Inbound, Outbound]
+        from:
+          type: object
+          properties:
+            phoneNumber:
+              type: string
+            name:
+              type: string
+        to:
+          type: object
+          properties:
+            extensionId:
+              type: string
+            name:
+              type: string
+            phoneNumber:
+              type: string
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+security:
+  - apiKey: []
