@@ -1,3 +1,4 @@
-ringcentral
-python-dotenv
-websockets
+fastapi>=0.115
+upstash-redis>=1.1
+httpx>=0.28
+python-dotenv>=1.0
