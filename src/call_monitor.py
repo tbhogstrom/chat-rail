@@ -49,7 +49,7 @@ def process_telephony_event(event: dict, store: CallStore) -> None:
 
 
 async def run_monitor(store: CallStore) -> None:
-    """Connect to RC WebSocket and process telephony events indefinitely."""
+    """Connect to RC WebSocket and process telephony events, reconnecting on disconnect."""
     sdk = SDK(Config.RC_CLIENT_ID, Config.RC_CLIENT_SECRET, Config.RC_SERVER)
     platform = sdk.platform()
     platform.login(jwt=Config.RC_JWT)
@@ -60,22 +60,54 @@ async def run_monitor(store: CallStore) -> None:
 
     event_filters = ["/restapi/v1.0/account/~/telephony/sessions"]
 
+    backoff = 1
+    while True:
+        try:
+            await _run_ws_session(sdk, event_filters, store)
+            backoff = 1  # reset on clean exit
+        except Exception as e:
+            logger.warning("WebSocket session ended: %s. Reconnecting in %ds...", e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
+async def _run_ws_session(sdk, event_filters, store: CallStore) -> None:
+    """Run a single WebSocket session until it disconnects or errors."""
     ws_client = sdk.create_web_socket_client()
     token_data = ws_client.get_web_socket_token()
 
-    def on_notification(msg):
-        if isinstance(msg, dict):
-            data = msg
-        elif hasattr(msg, "json_dict"):
-            data = msg.json_dict()
-        else:
-            try:
-                data = json.loads(str(msg))
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Could not parse notification: %s", msg)
+    def on_message(msg):
+        # RC WS sends every frame as a JSON string containing [meta, payload]
+        # or a single JSON object. Notification frames have meta.type == "ServerNotification".
+        try:
+            if isinstance(msg, (bytes, bytearray)):
+                msg = msg.decode("utf-8")
+            if isinstance(msg, str):
+                parsed = json.loads(msg)
+            elif isinstance(msg, dict):
+                parsed = msg
+            else:
+                logger.debug("Ignoring non-parseable frame: %s", type(msg))
                 return
-        logger.debug("Raw event: %s", json.dumps(data, default=str)[:500])
-        process_telephony_event(data, store)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Could not parse WS frame: %s", str(msg)[:200])
+            return
+
+        # RC frames arrive as [metadata, body] arrays
+        if isinstance(parsed, list) and len(parsed) >= 2:
+            meta, body = parsed[0], parsed[1]
+            msg_type = meta.get("type") if isinstance(meta, dict) else None
+            if msg_type != "ServerNotification":
+                logger.debug("WS non-notification frame: type=%s", msg_type)
+                return
+            event = {"body": body.get("body", body), "event": body.get("event")}
+        elif isinstance(parsed, dict):
+            event = parsed
+        else:
+            return
+
+        logger.info("RC notification: %s", json.dumps(event, default=str)[:300])
+        process_telephony_event(event, store)
 
     async def on_connected(client):
         logger.info("WebSocket connected, creating subscription...")
@@ -84,7 +116,11 @@ async def run_monitor(store: CallStore) -> None:
 
     ws_client.on(WebSocketEvents.connectionCreated,
                  lambda c: asyncio.create_task(on_connected(c)))
-    ws_client.on("notification", on_notification)
+    ws_client.on(WebSocketEvents.receiveMessage, on_message)
 
     logger.info("Opening WebSocket connection...")
-    await ws_client.open_connection(token_data["uri"], token_data["ws_access_token"])
+    try:
+        await ws_client.open_connection(token_data["uri"], token_data["ws_access_token"])
+    except Exception:
+        logger.exception("WebSocket session crashed")
+        raise
