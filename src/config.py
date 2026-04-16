@@ -4,6 +4,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _redis_url() -> str:
+    # Vercel KV injects KV_REST_API_URL; direct Upstash setups use UPSTASH_REDIS_URL
+    return os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_URL", "")
+
+
+def _redis_token() -> str:
+    return os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_TOKEN", "")
+
+
 class Config:
     # RingCentral
     RC_CLIENT_ID: str = os.environ.get("RC_CLIENT_ID", "")
@@ -11,9 +20,9 @@ class Config:
     RC_JWT: str = os.environ.get("RC_JWT", "")
     RC_SERVER: str = os.environ.get("RC_SERVER", "https://platform.ringcentral.com")
 
-    # Upstash Redis
-    UPSTASH_REDIS_URL: str = os.environ.get("UPSTASH_REDIS_URL", "")
-    UPSTASH_REDIS_TOKEN: str = os.environ.get("UPSTASH_REDIS_TOKEN", "")
+    # Redis (Vercel KV or direct Upstash)
+    REDIS_URL: str = _redis_url()
+    REDIS_TOKEN: str = _redis_token()
 
     # Deepgram
     DEEPGRAM_API_KEY: str = os.environ.get("DEEPGRAM_API_KEY", "")

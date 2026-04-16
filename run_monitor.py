@@ -55,7 +55,7 @@ async def poll_for_recordings(store: CallStore, interval: int = 30):
 
 
 async def main():
-    redis = Redis(url=Config.UPSTASH_REDIS_URL, token=Config.UPSTASH_REDIS_TOKEN)
+    redis = Redis(url=Config.REDIS_URL, token=Config.REDIS_TOKEN)
     store = CallStore(redis)
 
     tasks = [run_monitor(store)]
