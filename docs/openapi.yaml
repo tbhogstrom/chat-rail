@@ -4,7 +4,7 @@ info:
   description: Real-time call context for SFW Construction sales coaching via ChatGPT
   version: 1.0.0
 servers:
-  - url: https://sfw-call-bridge.vercel.app
+  - url: https://chat-rail.vercel.app
 paths:
   /api/calls/active:
     get:
