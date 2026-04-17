@@ -50,19 +50,21 @@ def process_telephony_event(event: dict, store: CallStore) -> None:
 
 async def run_monitor(store: CallStore) -> None:
     """Connect to RC WebSocket and process telephony events, reconnecting on disconnect."""
-    sdk = SDK(Config.RC_CLIENT_ID, Config.RC_CLIENT_SECRET, Config.RC_SERVER)
-    platform = sdk.platform()
-    platform.login(jwt=Config.RC_JWT)
-    logger.info("Authenticated with RingCentral")
-
-    ext = platform.get("/restapi/v1.0/account/~/extension/~").json_dict()
-    logger.info("Monitoring as: %s (ext %s)", ext["name"], ext["extensionNumber"])
-
     event_filters = ["/restapi/v1.0/account/~/telephony/sessions"]
 
     backoff = 1
     while True:
         try:
+            # Fresh SDK + JWT login on every iteration — avoids stale access/refresh tokens.
+            # JWT (server-to-server) has no user-driven refresh flow; each login mints fresh tokens.
+            sdk = SDK(Config.RC_CLIENT_ID, Config.RC_CLIENT_SECRET, Config.RC_SERVER)
+            platform = sdk.platform()
+            platform.login(jwt=Config.RC_JWT)
+            logger.info("Authenticated with RingCentral")
+
+            ext = platform.get("/restapi/v1.0/account/~/extension/~").json_dict()
+            logger.info("Monitoring as: %s (ext %s)", ext["name"], ext["extensionNumber"])
+
             await _run_ws_session(sdk, event_filters, store)
             backoff = 1  # reset on clean exit
         except Exception as e:
