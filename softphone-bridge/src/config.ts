@@ -20,7 +20,7 @@ export const config = {
     token: required("KV_REST_API_TOKEN"),
   },
   bridge: {
-    port: Number(process.env.BRIDGE_PORT ?? 8787),
+    port: Number(process.env.BRIDGE_PORT || 8787),
     apiKey: required("BRIDGE_API_KEY"),
   },
 };

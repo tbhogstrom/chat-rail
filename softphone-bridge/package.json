@@ -4,6 +4,9 @@
   "description": "RC softphone sidecar — supervises calls and streams audio to Deepgram",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
