@@ -1,19 +1,32 @@
 # Phase 2: Live Call Transcripts Implementation Plan
 
+> **Rev 2 — 2026-04-21.** This supersedes Rev 1 (pjsua2 + WSL), which was invalidated by RingCentral support feedback on 2026-04-21 (support case 31250629).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Capture live audio from active RingCentral calls via the Supervision API, stream it to Deepgram for real-time speech-to-text, and accumulate transcripts in Redis so the GPT Action API can return the live conversation to ChatGPT as calls are happening.
+**Goal:** Capture live audio from active RingCentral calls, stream it to Deepgram for real-time speech-to-text, and accumulate transcripts in Redis so the GPT Action API can return the live conversation to ChatGPT as calls happen.
 
-**Architecture:** A Linux process (WSL for dev, Linux VPS for prod) registers with RingCentral as a SIP client using ext 120's credentials. When the Phase 1 call monitor sees `status=Answered` on a monitored extension, it calls the RC Supervision API with that session's ID — RC invites the SIP client into the call as a silent listener. The SIP client's audio pipeline feeds raw PCM frames to Deepgram's real-time WebSocket, which streams back transcript chunks. Each chunk is appended to the call's transcript in Redis. The existing FastAPI endpoints (unchanged) then serve that live transcript to ChatGPT.
+**Architecture:** A Node/TypeScript **softphone sidecar** process holds a SIP registration via RingCentral's official [`ringcentral-softphone-ts`](https://github.com/ringcentral/ringcentral-softphone-ts) SDK. When the existing Python call monitor sees `status=Answered` on a monitored extension, it POSTs `{sessionId, agentExtNumber}` to the sidecar. The sidecar dials `*80` (RC's in-call monitoring feature code), sends the agent's extension number as DTMF, and receives RTP audio packets via the SDK's `audioPacket` event. Audio frames stream to Deepgram's real-time WebSocket. Finalized transcript chunks append to `call:{sessionId}:transcript` in Redis — the same key the existing FastAPI endpoints already read.
 
-**Tech Stack:** Python 3.12+, pjsua2 (PJSIP Python bindings), `websockets` (async WS client for Deepgram), asyncio, existing Redis + call_monitor
+**Tech stack:** Node 20+, TypeScript, `ringcentral-softphone` (npm), `@deepgram/sdk`, `ioredis` / upstash-redis client, Fastify (tiny HTTP surface for intake). Python stack (Phase 1) changes minimally.
+
+**Why this shape (vs. Rev 1):**
+- RC told us `/client-info/sip-provision` cannot make a SoftPhone-type device (only WebPhone). Rev 1's provisioning path was a dead end.
+- RC told us pjsua2 is out of support scope and to use their official TS SDK instead. Rev 1's entire SIP stack is now unsupported.
+- Tyler Liu's [rc-softphone-monitor-demo](https://github.com/tylerlong/rc-softphone-monitor-demo) shows supervision is `softphone.call("*80")` + DTMF — no REST `/supervise` call needed.
+- TS SDK runs on Node anywhere (incl. Windows native) — **WSL is no longer required**.
 
 ---
 
 ## Prerequisites (User must complete before Task 1)
 
-1. **RC admin:** Ext 120 (Tyler Falcon) added as a monitor in the "Sales" call monitoring group. ✅ **DONE**
-2. **WSL installed:** Windows user needs WSL 2 with Ubuntu 22.04 or 24.04. Run `wsl --install -d Ubuntu-24.04` from PowerShell if not already present.
+1. **RC admin:** Ext 120 (Tyler Falcon) is a monitor in the "Sales" call monitoring group. ✅ **DONE**
+2. **Verify device `677386052` is type `OtherPhone`** (Task 0 below). If not, create a new device of type "Existing Phone" in the RC admin portal and use that device ID instead.
+3. **Node.js 20+** installed on whatever box will run the sidecar. Windows, macOS, or Linux all fine.
+
+**Obsoleted from Rev 1:**
+- ❌ WSL install — no longer needed. `docs/WSL_SETUP.md` should be deleted in Task 1.
+- ❌ pjsua2 build from source — SDK is pure npm install.
+- ❌ `/client-info/sip-provision` script — use `readDeviceSipInfo` on an existing device instead.
 
 ---
 
@@ -21,177 +34,299 @@
 
 ```
 callrail-chatgpt/
-├── docs/
-│   └── WSL_SETUP.md                     # Developer guide for WSL environment
+├── softphone-bridge/                     # NEW — Node/TS sidecar
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── .env.example
+│   └── src/
+│       ├── index.ts                      # entrypoint: registers softphone, starts HTTP
+│       ├── server.ts                     # Fastify app: POST /sessions, DELETE /sessions/:id
+│       ├── supervisor.ts                 # per-session: *80 → DTMF → audio → Deepgram → Redis
+│       ├── deepgram.ts                   # Deepgram live client wrapper
+│       ├── redis.ts                      # same key schema as Python CallStore
+│       └── config.ts                     # env var parsing
 ├── src/
-│   ├── supervision.py                   # RC Supervision API client (start/stop)
-│   ├── sip_monitor.py                   # pjsua2 wrapper: register, accept invites, emit audio frames
-│   ├── deepgram_stream.py               # Deepgram realtime WS client: stream audio in, get transcripts out
-│   ├── live_transcriber.py              # Orchestrator: Supervision → SIP → Deepgram → Redis
-│   ├── call_monitor.py                  # MODIFY: invoke live_transcriber on Answered events
-│   └── config.py                        # MODIFY: add SFW_MONITORED_EXTENSIONS, SIP_* settings
+│   ├── call_monitor.py                   # MODIFY: capture extensionNumber, POST to sidecar
+│   ├── config.py                         # MODIFY: add SOFTPHONE_BRIDGE_URL, MONITORED_EXTENSIONS
+│   └── sidecar_client.py                 # NEW — thin httpx wrapper for sidecar calls
 ├── tests/
-│   ├── test_supervision.py              # Mock RC API calls
-│   ├── test_deepgram_stream.py          # Mock Deepgram WebSocket
-│   └── test_live_transcriber.py         # Integration with all mocks
-└── run_live.py                          # WSL/Linux entrypoint: FastAPI + call_monitor + SIP registrar
+│   ├── test_call_monitor.py              # MODIFY: sidecar invocation tests
+│   └── test_sidecar_client.py            # NEW
+└── scripts/
+    └── get_device_sip_info.py            # NEW — one-time: list devices, fetch SIP creds
 ```
+
+Gone from Rev 1: `src/supervision.py`, `src/sip_monitor.py`, `src/deepgram_stream.py`, `src/live_transcriber.py`, `run_live.py`, `docs/WSL_SETUP.md`.
 
 ---
 
-### Task 1: WSL Environment Setup Guide
+### Task 0: Verify device + pull SIP credentials (one-time)
 
-**Files:**
-- Create: `docs/WSL_SETUP.md`
+**Files:** Create `scripts/get_device_sip_info.py`
 
-This isn't code — it's a reference document so the developer can get a reproducible WSL dev environment. Consolidates everything needed to install pjsua2, Python deps, and run the project.
+Tyler's `readDeviceSipInfo` path requires a device of type `OtherPhone` (API type) / "Existing Phone" (GUI label). Our existing device `677386052` is probably already this type — confirm, and fetch SIP credentials.
 
-- [ ] **Step 1: Create `docs/WSL_SETUP.md`**
-
-```markdown
-# WSL Development Setup for Phase 2 (Live Transcripts)
-
-Phase 2 requires a Linux environment because `pjsua2` is hard to build on Windows.
-Phase 1 code continues to work on Windows; only `run_live.py` (and the SIP monitor it uses) needs Linux.
-
-## 1. Install WSL (if not already)
-
-From PowerShell (Admin):
-```
-wsl --install -d Ubuntu-24.04
-```
-
-Reboot, open Ubuntu, set a username/password. You should land in a bash prompt.
-
-## 2. System packages
-
-```bash
-sudo apt update
-sudo apt install -y \
-    python3 python3-venv python3-pip python3-dev \
-    build-essential pkg-config \
-    libasound2-dev libssl-dev \
-    git curl \
-    ffmpeg
-```
-
-## 3. Clone the repo inside WSL
-
-Don't work on `/mnt/c/...` — slow and file-permission issues. Clone into the Linux home dir:
-
-```bash
-cd ~
-git clone https://github.com/tbhogstrom/chat-rail.git
-cd chat-rail
-```
-
-## 4. Python virtualenv + deps
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-## 5. Install pjsua2 Python bindings
-
-Pre-built wheel is not reliably available on PyPI; build from source:
-
-```bash
-# One-time: install PJSIP and its Python bindings
-cd /tmp
-wget https://github.com/pjsip/pjproject/archive/refs/tags/2.14.tar.gz
-tar xzf 2.14.tar.gz
-cd pjproject-2.14
-
-./configure --enable-shared CFLAGS="-fPIC"
-make dep
-make
-sudo make install
-sudo ldconfig
-
-# Build Python bindings against the venv's Python
-cd pjsip-apps/src/swig
-make python
-cd python
-# Point at the venv's Python explicitly:
-python3 setup.py install
-```
-
-Verify:
-```bash
-python3 -c "import pjsua2; print(pjsua2.Endpoint())"
-```
-
-If it prints something non-erroring, you're good.
-
-## 6. Copy your .env into WSL
-
-From Windows bash in this repo:
-```bash
-cp /mnt/c/Users/tfalcon/callrail-chatgpt/.env ~/chat-rail/.env
-```
-
-Or create it fresh inside WSL using your editor.
-
-## 7. Run it
-
-```bash
-cd ~/chat-rail
-source .venv/bin/activate
-python run_live.py
-```
-```
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add docs/WSL_SETUP.md
-git commit -m "docs: add WSL development setup guide for Phase 2"
-```
-
----
-
-### Task 2: Config — Add monitored-extensions and SIP settings
-
-**Files:**
-- Modify: `src/config.py`
-- Modify: `.env.example`
-
-We need to know which extensions to monitor (to avoid supervising non-sales calls) and hold SIP connection config. The SIP settings are read after device provisioning (Task 3).
-
-- [ ] **Step 1: Modify `src/config.py` to add three settings**
-
-Append inside the `Config` class (after `CALL_TTL`):
+- [ ] **Step 1: Create `scripts/get_device_sip_info.py`**
 
 ```python
-    # SIP device credentials (from RC device provisioning — see docs/WSL_SETUP.md)
-    SIP_DOMAIN: str = os.environ.get("SIP_DOMAIN", "sip.ringcentral.com")
-    SIP_USERNAME: str = os.environ.get("SIP_USERNAME", "")
-    SIP_PASSWORD: str = os.environ.get("SIP_PASSWORD", "")
-    SIP_AUTH_ID: str = os.environ.get("SIP_AUTH_ID", "")
-    SIP_DEVICE_ID: str = os.environ.get("SIP_DEVICE_ID", "")
+"""One-time: list devices under ext 120, confirm type, and pull SIP credentials.
 
-    # Comma-separated list of extension IDs whose calls should be transcribed.
-    # Empty string = monitor all.
+Usage:
+    python scripts/get_device_sip_info.py [--extension-id 120]
+"""
+import argparse, json, os
+from dotenv import load_dotenv
+from ringcentral import SDK
+
+load_dotenv()
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--extension-id", default="~", help="Extension ID (default: authed user)")
+args = ap.parse_args()
+
+sdk = SDK(os.environ["RC_CLIENT_ID"], os.environ["RC_CLIENT_SECRET"], os.environ["RC_SERVER"])
+platform = sdk.platform()
+platform.login(jwt=os.environ["RC_JWT"])
+
+# 1. List devices
+devices = platform.get(
+    f"/restapi/v1.0/account/~/extension/{args.extension_id}/device"
+).json_dict()
+
+print("\n=== Devices on this extension ===")
+usable = []
+for d in devices["records"]:
+    print(f"  id={d['id']}  type={d['type']}  name={d.get('name','')}  "
+          f"computerName={d.get('computerName','')}")
+    if d["type"] == "OtherPhone":
+        usable.append(d)
+
+if not usable:
+    print("\n❌ No device of type 'OtherPhone' found.")
+    print("   Go to service.ringcentral.com → user → Devices & Numbers → add an")
+    print("   'Existing Phone' device, then re-run this script.")
+    raise SystemExit(1)
+
+device = usable[0]
+print(f"\n✅ Using device {device['id']} ({device.get('name','')})")
+
+# 2. Get SIP info
+sip_info = platform.get(
+    f"/restapi/v1.0/account/~/device/{device['id']}/sip-info"
+).json_dict()
+
+# Pick NA proxyTLS (sip20.ringcentral.com:5096 typically)
+proxy_tls = None
+for p in sip_info.get("outboundProxies", []):
+    if p.get("region") == "NA":
+        proxy_tls = p["proxyTLS"]
+        break
+if not proxy_tls:
+    proxy_tls = sip_info["outboundProxies"][0]["proxyTLS"]
+
+print("\n=== Add to softphone-bridge/.env ===\n")
+print(f"SIP_INFO_DOMAIN={sip_info['domain']}")
+print(f"SIP_INFO_OUTBOUND_PROXY={proxy_tls}")
+print(f"SIP_INFO_USERNAME={sip_info['userName']}")
+print(f"SIP_INFO_PASSWORD={sip_info['password']}")
+print(f"SIP_INFO_AUTHORIZATION_ID={sip_info['authorizationId']}")
+print(f"RC_DEVICE_ID={device['id']}  # reference only")
+```
+
+- [ ] **Step 2: Run it and capture output**
+
+```bash
+python scripts/get_device_sip_info.py --extension-id 120
+```
+
+**Pass criteria:** the script prints five `SIP_INFO_*` lines. Save them for Task 2.
+**Fail case:** no `OtherPhone` device — follow the GUI instructions the script prints, then re-run. Do not proceed.
+
+- [ ] **Step 3: Commit the script (not the credentials)**
+
+```bash
+git add scripts/get_device_sip_info.py
+git commit -m "feat: one-time device/SIP-info fetcher for softphone sidecar"
+```
+
+---
+
+### Task 1: Scaffold the sidecar project
+
+**Files:** Create `softphone-bridge/{package.json, tsconfig.json, .env.example, src/config.ts, src/index.ts}`; delete `docs/WSL_SETUP.md`.
+
+- [ ] **Step 1: Create `softphone-bridge/package.json`**
+
+```json
+{
+  "name": "sfw-softphone-bridge",
+  "version": "0.1.0",
+  "description": "RC softphone sidecar — supervises calls and streams audio to Deepgram",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@deepgram/sdk": "^3.9.0",
+    "@upstash/redis": "^1.34.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.0.0",
+    "ringcentral-softphone": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
+```
+
+- [ ] **Step 2: Create `softphone-bridge/tsconfig.json`**
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*"]
+}
+```
+
+- [ ] **Step 3: Create `softphone-bridge/.env.example`**
+
+```env
+# From scripts/get_device_sip_info.py
+SIP_INFO_DOMAIN=
+SIP_INFO_OUTBOUND_PROXY=
+SIP_INFO_USERNAME=
+SIP_INFO_PASSWORD=
+SIP_INFO_AUTHORIZATION_ID=
+
+# Deepgram
+DEEPGRAM_API_KEY=
+
+# Redis (share with Python stack — same Vercel KV / Upstash instance)
+KV_REST_API_URL=
+KV_REST_API_TOKEN=
+
+# Sidecar's own HTTP listener (Python posts here)
+BRIDGE_PORT=8787
+BRIDGE_API_KEY=   # shared secret with Python stack
+```
+
+- [ ] **Step 4: Create `softphone-bridge/src/config.ts`**
+
+```typescript
+import "dotenv/config";
+
+function required(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing required env var: ${name}`);
+  return v;
+}
+
+export const config = {
+  sip: {
+    domain: required("SIP_INFO_DOMAIN"),
+    outboundProxy: required("SIP_INFO_OUTBOUND_PROXY"),
+    username: required("SIP_INFO_USERNAME"),
+    password: required("SIP_INFO_PASSWORD"),
+    authorizationId: required("SIP_INFO_AUTHORIZATION_ID"),
+  },
+  deepgramKey: required("DEEPGRAM_API_KEY"),
+  redis: {
+    url: required("KV_REST_API_URL"),
+    token: required("KV_REST_API_TOKEN"),
+  },
+  bridge: {
+    port: Number(process.env.BRIDGE_PORT ?? 8787),
+    apiKey: required("BRIDGE_API_KEY"),
+  },
+};
+```
+
+- [ ] **Step 5: Create a minimal `softphone-bridge/src/index.ts` (registration-only smoke test)**
+
+```typescript
+import Softphone from "ringcentral-softphone";
+import { config } from "./config.js";
+
+const softphone = new Softphone({
+  domain: config.sip.domain,
+  outboundProxy: config.sip.outboundProxy,
+  username: config.sip.username,
+  password: config.sip.password,
+  authorizationId: config.sip.authorizationId,
+  codec: "PCMU/8000",
+});
+softphone.enableDebugMode();
+
+await softphone.register();
+console.log("[bridge] softphone registered");
+
+// Keep process alive
+process.stdin.resume();
+```
+
+- [ ] **Step 6: Install deps and run the smoke test**
+
+```bash
+cd softphone-bridge
+npm install
+cp .env.example .env
+# fill in SIP_INFO_*, DEEPGRAM_API_KEY, KV_*, BRIDGE_API_KEY
+npm run dev
+```
+
+**Pass criteria:** console shows SIP REGISTER → 200 OK (debug mode prints the SIP exchange). Process stays alive.
+
+- [ ] **Step 7: Delete obsoleted WSL guide and commit scaffold**
+
+```bash
+git rm docs/WSL_SETUP.md
+git add softphone-bridge/
+git commit -m "feat: scaffold softphone-bridge TS sidecar; drop obsolete WSL guide"
+```
+
+---
+
+### Task 2: Python config — sidecar URL + monitored extensions
+
+**Files:** Modify `src/config.py`, `.env.example`
+
+- [ ] **Step 1: Append to `Config` class in `src/config.py`**
+
+```python
+    # Softphone sidecar (Phase 2)
+    SOFTPHONE_BRIDGE_URL: str = os.environ.get("SOFTPHONE_BRIDGE_URL", "")
+    SOFTPHONE_BRIDGE_API_KEY: str = os.environ.get("SOFTPHONE_BRIDGE_API_KEY", "")
+
+    # Extension IDs to live-transcribe. Empty = disabled.
     MONITORED_EXTENSIONS: list[str] = [
         e.strip() for e in os.environ.get("MONITORED_EXTENSIONS", "").split(",") if e.strip()
     ]
 ```
 
-- [ ] **Step 2: Update `.env.example`**
-
-Append to the bottom of `.env.example`:
+- [ ] **Step 2: Append to root `.env.example`**
 
 ```env
-# SIP device credentials for Supervision API (see docs/WSL_SETUP.md to provision)
-SIP_DOMAIN=sip.ringcentral.com
-SIP_USERNAME=
-SIP_PASSWORD=
-SIP_AUTH_ID=
-SIP_DEVICE_ID=
-
-# Comma-separated extension IDs to monitor. Leave empty to monitor all.
+# Phase 2 — softphone sidecar
+SOFTPHONE_BRIDGE_URL=http://localhost:8787
+SOFTPHONE_BRIDGE_API_KEY=
 MONITORED_EXTENSIONS=
 ```
 
@@ -199,849 +334,398 @@ MONITORED_EXTENSIONS=
 
 ```bash
 git add src/config.py .env.example
-git commit -m "feat: add SIP and monitored-extensions config for Phase 2"
+git commit -m "feat: add softphone-bridge config for Phase 2"
 ```
 
 ---
 
-### Task 3: Supervision API Client
+### Task 3: Sidecar — Redis client mirroring the Python key schema
 
-**Files:**
-- Create: `src/supervision.py`
-- Create: `tests/test_supervision.py`
+**Files:** Create `softphone-bridge/src/redis.ts`
 
-The Supervision API is a single REST endpoint: `POST /restapi/v1.0/account/~/telephony/sessions/{sessionId}/supervise`. Given a live session ID and our device ID, it inserts us as a silent listening party. This task wraps that call and its error handling.
+The sidecar writes to the same Redis keys the Python `CallStore` already owns. Exact schema lives in `src/redis_store.py`.
 
-- [ ] **Step 1: Write failing test for `start_supervision`**
+- [ ] **Step 1: Create `softphone-bridge/src/redis.ts`**
 
-File: `tests/test_supervision.py`
+```typescript
+import { Redis } from "@upstash/redis";
+import { config } from "./config.js";
 
-```python
-import pytest
-from unittest.mock import MagicMock
-from src.supervision import start_supervision, SupervisionError
+const redis = new Redis({ url: config.redis.url, token: config.redis.token });
 
+const CALL_TTL_SECONDS = 3600;
 
-def test_start_supervision_posts_correct_payload():
-    platform = MagicMock()
-    resp = MagicMock()
-    resp.json_dict.return_value = {"id": "party-abc", "status": {"code": "Setup"}}
-    platform.post.return_value = resp
-
-    result = start_supervision(
-        platform,
-        session_id="s-123",
-        device_id="dev-xyz",
-        agent_extension_id="119",
-    )
-
-    platform.post.assert_called_once()
-    call_args = platform.post.call_args
-    assert "/supervise" in call_args[0][0]
-    assert "s-123" in call_args[0][0]
-    body = call_args.kwargs.get("body") or call_args[0][1]
-    assert body["mode"] == "Listen"
-    assert body["supervisorDeviceId"] == "dev-xyz"
-    assert body["agentExtensionId"] == "119"
-    assert result["id"] == "party-abc"
-
-
-def test_start_supervision_raises_on_error():
-    platform = MagicMock()
-    platform.post.side_effect = Exception("403 Forbidden")
-
-    with pytest.raises(SupervisionError):
-        start_supervision(platform, "s-123", "dev-xyz", "119")
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_supervision.py -v`
-Expected: FAIL with `ModuleNotFoundError`
-
-- [ ] **Step 3: Implement `start_supervision`**
-
-File: `src/supervision.py`
-
-```python
-import logging
-
-logger = logging.getLogger(__name__)
-
-
-class SupervisionError(Exception):
-    """Raised when the RC Supervision API rejects our request."""
-
-
-def start_supervision(platform, session_id: str, device_id: str,
-                      agent_extension_id: str) -> dict:
-    """Silently join a telephony session as a listener.
-
-    Args:
-        platform: an authenticated ringcentral SDK platform instance
-        session_id: the telephonySessionId of the call to supervise
-        device_id: our SIP device ID (SIP_DEVICE_ID in Config)
-        agent_extension_id: the extensionId of the agent whose audio we want
-
-    Returns the new party record on success. Raises SupervisionError on failure.
-    """
-    url = f"/restapi/v1.0/account/~/telephony/sessions/{session_id}/supervise"
-    body = {
-        "mode": "Listen",
-        "supervisorDeviceId": device_id,
-        "agentExtensionId": agent_extension_id,
-    }
-    try:
-        resp = platform.post(url, body=body)
-        return resp.json_dict()
-    except Exception as e:
-        logger.exception("Supervision API failed for session %s", session_id)
-        raise SupervisionError(str(e)) from e
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_supervision.py -v`
-Expected: 2 PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/supervision.py tests/test_supervision.py
-git commit -m "feat: RC Supervision API client for silent call monitoring"
-```
-
----
-
-### Task 4: Deepgram Realtime WebSocket Client
-
-**Files:**
-- Create: `src/deepgram_stream.py`
-- Create: `tests/test_deepgram_stream.py`
-
-Deepgram's real-time API is a WebSocket. You open it with your API key + model params, send binary audio frames (e.g., 20ms PCM chunks), and receive JSON messages with interim + final transcript chunks. This class manages the connection and exposes `send_audio()` and an async iterator of transcript strings.
-
-- [ ] **Step 1: Write failing test**
-
-File: `tests/test_deepgram_stream.py`
-
-```python
-import asyncio
-import json
-import pytest
-from unittest.mock import AsyncMock, patch
-from src.deepgram_stream import DeepgramStream
-
-
-@pytest.mark.asyncio
-async def test_stream_yields_finalized_transcripts():
-    messages = [
-        json.dumps({
-            "channel": {"alternatives": [{"transcript": "Hello there"}]},
-            "is_final": True,
-        }),
-        json.dumps({
-            "channel": {"alternatives": [{"transcript": "partial"}]},
-            "is_final": False,
-        }),
-        json.dumps({
-            "channel": {"alternatives": [{"transcript": "How can I help"}]},
-            "is_final": True,
-        }),
-    ]
-
-    fake_ws = AsyncMock()
-    fake_ws.__aiter__.return_value = iter(messages)
-
-    with patch("src.deepgram_stream.websockets.connect", AsyncMock(return_value=fake_ws)):
-        stream = DeepgramStream(api_key="test")
-        await stream.open()
-        finals = [t async for t in stream.transcripts()]
-
-    assert finals == ["Hello there", "How can I help"]
-
-
-@pytest.mark.asyncio
-async def test_send_audio_writes_to_ws():
-    fake_ws = AsyncMock()
-    fake_ws.__aiter__.return_value = iter([])
-
-    with patch("src.deepgram_stream.websockets.connect", AsyncMock(return_value=fake_ws)):
-        stream = DeepgramStream(api_key="test")
-        await stream.open()
-        await stream.send_audio(b"\x00\x01\x02\x03")
-
-    fake_ws.send.assert_awaited_once_with(b"\x00\x01\x02\x03")
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_deepgram_stream.py -v`
-Expected: FAIL — `ModuleNotFoundError`
-
-- [ ] **Step 3: Implement `DeepgramStream`**
-
-File: `src/deepgram_stream.py`
-
-```python
-import logging
-import json
-from urllib.parse import urlencode
-
-import websockets
-
-logger = logging.getLogger(__name__)
-
-DEEPGRAM_WS = "wss://api.deepgram.com/v1/listen"
-
-
-class DeepgramStream:
-    """Real-time speech-to-text via Deepgram WebSocket.
-
-    Usage:
-        stream = DeepgramStream(api_key=...)
-        await stream.open()
-        # Feed audio in one coroutine:
-        await stream.send_audio(pcm_bytes)
-        # Consume transcripts in another:
-        async for line in stream.transcripts():
-            print(line)
-        await stream.close()
-    """
-
-    def __init__(self, api_key: str, sample_rate: int = 8000,
-                 encoding: str = "mulaw", model: str = "nova-3"):
-        self.api_key = api_key
-        self.sample_rate = sample_rate
-        self.encoding = encoding
-        self.model = model
-        self._ws = None
-
-    async def open(self) -> None:
-        params = urlencode({
-            "model": self.model,
-            "encoding": self.encoding,
-            "sample_rate": self.sample_rate,
-            "interim_results": "true",
-            "punctuate": "true",
-            "smart_format": "true",
-        })
-        url = f"{DEEPGRAM_WS}?{params}"
-        self._ws = await websockets.connect(
-            url,
-            additional_headers={"Authorization": f"Token {self.api_key}"},
-        )
-        logger.info("Deepgram WS connected")
-
-    async def send_audio(self, audio_bytes: bytes) -> None:
-        if self._ws is None:
-            raise RuntimeError("open() must be called before send_audio()")
-        await self._ws.send(audio_bytes)
-
-    async def transcripts(self):
-        """Async generator yielding finalized transcript strings."""
-        if self._ws is None:
-            raise RuntimeError("open() must be called before transcripts()")
-        async for msg in self._ws:
-            try:
-                data = json.loads(msg)
-            except json.JSONDecodeError:
-                continue
-            if not data.get("is_final"):
-                continue
-            alts = data.get("channel", {}).get("alternatives", [])
-            if not alts:
-                continue
-            text = alts[0].get("transcript", "").strip()
-            if text:
-                yield text
-
-    async def close(self) -> None:
-        if self._ws is not None:
-            await self._ws.close()
-            self._ws = None
-            logger.info("Deepgram WS closed")
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_deepgram_stream.py -v`
-Expected: 2 PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/deepgram_stream.py tests/test_deepgram_stream.py
-git commit -m "feat: Deepgram real-time WebSocket client for live STT"
-```
-
----
-
-### Task 5: SIP Monitor (pjsua2 wrapper) — registration only
-
-**Files:**
-- Create: `src/sip_monitor.py`
-
-This task only gets SIP registration working. Audio capture and the Supervision flow integration come in Task 6. Splitting keeps each piece independently verifiable.
-
-`pjsua2` doesn't lend itself to unit testing (it's a C++ wrapper that opens real UDP sockets and talks to a real SIP server). We verify by running against live RC.
-
-- [ ] **Step 1: Create `src/sip_monitor.py` with registration-only logic**
-
-```python
-"""pjsua2-based SIP client that registers with RC and accepts incoming supervision calls.
-
-Must be run inside WSL or Linux — pjsua2 doesn't install cleanly on Windows.
-"""
-import logging
-import threading
-import time
-
-import pjsua2 as pj
-
-from src.config import Config
-
-logger = logging.getLogger(__name__)
-
-
-class SipMonitor:
-    """Maintains a SIP registration with RC and dispatches incoming supervise calls."""
-
-    def __init__(self, on_incoming_call=None):
-        self.on_incoming_call = on_incoming_call
-        self._ep: pj.Endpoint | None = None
-        self._account: pj.Account | None = None
-        self._thread: threading.Thread | None = None
-        self._ready = threading.Event()
-
-    def start(self) -> None:
-        """Start the SIP endpoint in a background thread and block until registered."""
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        if not self._ready.wait(timeout=30):
-            raise RuntimeError("SIP registration timed out")
-
-    def _run(self) -> None:
-        ep = pj.Endpoint()
-        ep.libCreate()
-        ep_cfg = pj.EpConfig()
-        ep_cfg.uaConfig.userAgent = "sfw-call-bridge/1.0"
-        ep.libInit(ep_cfg)
-
-        transport_cfg = pj.TransportConfig()
-        transport_cfg.port = 5060
-        ep.transportCreate(pj.PJSIP_TRANSPORT_UDP, transport_cfg)
-        ep.libStart()
-        self._ep = ep
-
-        acc_cfg = pj.AccountConfig()
-        acc_cfg.idUri = f"sip:{Config.SIP_USERNAME}@{Config.SIP_DOMAIN}"
-        acc_cfg.regConfig.registrarUri = f"sip:{Config.SIP_DOMAIN}"
-        cred = pj.AuthCredInfo("digest", "*", Config.SIP_AUTH_ID, 0, Config.SIP_PASSWORD)
-        acc_cfg.sipConfig.authCreds.append(cred)
-
-        self._account = _MonitorAccount(self.on_incoming_call, self._ready)
-        self._account.create(acc_cfg)
-        logger.info("SIP account created, awaiting registration...")
-
-        # Keep the thread alive running pjsua2's event loop
-        while True:
-            ep.libHandleEvents(100)
-
-    def stop(self) -> None:
-        if self._ep:
-            self._ep.libDestroy()
-            self._ep = None
-
-
-class _MonitorAccount(pj.Account):
-    """pjsua2 Account callback subclass — notified on registration and incoming calls."""
-
-    def __init__(self, on_incoming_call, ready_event):
-        super().__init__()
-        self._on_incoming = on_incoming_call
-        self._ready = ready_event
-
-    def onRegState(self, prm):
-        info = self.getInfo()
-        logger.info("SIP reg state: %s (code=%s)", info.regIsActive, prm.code)
-        if info.regIsActive:
-            self._ready.set()
-
-    def onIncomingCall(self, prm):
-        logger.info("SIP incoming call: id=%s", prm.callId)
-        if self._on_incoming:
-            self._on_incoming(self, prm.callId)
-```
-
-- [ ] **Step 2: Run registration test in WSL**
-
-You need provisioned SIP credentials in `.env` first (see `docs/WSL_SETUP.md` — this will become part of the guide in Task 7). For now, create a small manual test:
-
-Temporary file `verify_sip_reg.py`:
-```python
-import logging
-import time
-from src.sip_monitor import SipMonitor
-
-logging.basicConfig(level=logging.INFO)
-
-monitor = SipMonitor()
-monitor.start()
-print("Registered successfully. Keeping alive for 10s.")
-time.sleep(10)
-monitor.stop()
-```
-
-Run:
-```bash
-cd ~/chat-rail && source .venv/bin/activate
-python verify_sip_reg.py
-```
-
-Expected output includes:
-```
-SIP account created, awaiting registration...
-SIP reg state: True (code=200)
-Registered successfully. Keeping alive for 10s.
-```
-
-Then delete `verify_sip_reg.py`:
-```bash
-rm verify_sip_reg.py
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/sip_monitor.py
-git commit -m "feat: SIP monitor with pjsua2 — registration only"
-```
-
----
-
-### Task 6: SIP Monitor — audio frame extraction
-
-**Files:**
-- Modify: `src/sip_monitor.py`
-
-Extend the SIP monitor to auto-answer incoming calls (Supervision pushes them to us) and expose a callback that receives raw audio frames.
-
-pjsua2 delivers audio through the `AudioMedia` abstraction. We create a custom `AudioMediaPort` that inherits from pjsua2's `AudioMedia`, receives frames in `onFrameRequested`/`onFrameReceived`, and forwards raw bytes to a user-provided callback.
-
-- [ ] **Step 1: Add `_MonitorCall` and `_AudioSink` classes to `src/sip_monitor.py`**
-
-Append to `src/sip_monitor.py`:
-
-```python
-class _AudioSink(pj.AudioMediaPort):
-    """Custom audio sink that forwards frames to a Python callback."""
-
-    def __init__(self, on_frame):
-        super().__init__()
-        self._on_frame = on_frame
-
-    def onFrameReceived(self, frame):
-        # frame.buf is a bytearray of PCM audio; forward to consumer
-        try:
-            self._on_frame(bytes(frame.buf))
-        except Exception:
-            logger.exception("Frame callback raised")
-
-
-class _MonitorCall(pj.Call):
-    """pjsua2 Call subclass that auto-answers and pipes audio to an _AudioSink."""
-
-    def __init__(self, account, call_id, on_audio_frame):
-        super().__init__(account, call_id)
-        self._on_frame = on_audio_frame
-        self._sink: _AudioSink | None = None
-
-    def onCallState(self, prm):
-        info = self.getInfo()
-        logger.info("Call state: %s", info.stateText)
-
-    def onCallMediaState(self, prm):
-        info = self.getInfo()
-        for mi in info.media:
-            if mi.type == pj.PJMEDIA_TYPE_AUDIO and mi.status == pj.PJSUA_CALL_MEDIA_ACTIVE:
-                # Create an audio sink port and connect the call's audio media to it
-                fmt = pj.MediaFormatAudio()
-                fmt.type = pj.PJMEDIA_TYPE_AUDIO
-                fmt.clockRate = 8000
-                fmt.channelCount = 1
-                fmt.bitsPerSample = 16
-                fmt.frameTimeUsec = 20000
-                self._sink = _AudioSink(self._on_frame)
-                self._sink.createPort("audio_sink", fmt)
-                call_audio = self.getMedia(mi.index)
-                pj.AudioMedia.typecastFromMedia(call_audio).startTransmit(self._sink)
-                logger.info("Audio transmit started on this call")
-```
-
-- [ ] **Step 2: Modify `SipMonitor.__init__` to accept an audio callback**
-
-Replace the `__init__` signature near the top of the file:
-
-```python
-    def __init__(self, on_audio_frame=None):
-        self.on_audio_frame = on_audio_frame
-        self._ep: pj.Endpoint | None = None
-        self._account: pj.Account | None = None
-        self._thread: threading.Thread | None = None
-        self._ready = threading.Event()
-```
-
-And remove the now-unused `on_incoming_call` param — the call handling happens inside the account subclass.
-
-- [ ] **Step 3: Modify `_MonitorAccount.onIncomingCall` to instantiate `_MonitorCall`**
-
-Replace:
-
-```python
-    def __init__(self, on_audio_frame, ready_event):
-        super().__init__()
-        self._on_frame = on_audio_frame
-        self._ready = ready_event
-
-    def onRegState(self, prm):
-        info = self.getInfo()
-        logger.info("SIP reg state: %s (code=%s)", info.regIsActive, prm.code)
-        if info.regIsActive:
-            self._ready.set()
-
-    def onIncomingCall(self, prm):
-        logger.info("SIP incoming call: id=%s", prm.callId)
-        call = _MonitorCall(self, prm.callId, self._on_frame)
-        call_prm = pj.CallOpParam()
-        call_prm.statusCode = 200  # auto-answer
-        call.answer(call_prm)
-```
-
-And update `_run()` to pass `self.on_audio_frame` when creating `_MonitorAccount`:
-
-```python
-        self._account = _MonitorAccount(self.on_audio_frame, self._ready)
-```
-
-- [ ] **Step 4: Live verification in WSL**
-
-Temporary file `verify_sip_audio.py`:
-```python
-import logging, time
-from src.sip_monitor import SipMonitor
-
-logging.basicConfig(level=logging.INFO)
-
-total = 0
-def on_frame(buf):
-    global total
-    total += len(buf)
-
-monitor = SipMonitor(on_audio_frame=on_frame)
-monitor.start()
-print("Registered. Now trigger a supervised call via the Supervision API.")
-print("Will run for 60s and print byte count every 5s.")
-for i in range(12):
-    time.sleep(5)
-    print(f"  [{i*5+5}s] received {total} audio bytes total")
-monitor.stop()
-```
-
-Run in WSL (with SIP credentials in `.env`). Trigger supervision via another terminal (Task 8 covers the full integration — for this test, use a Python REPL calling `start_supervision()` against a real active call).
-
-Expected: once supervised, byte count grows; otherwise stays at 0. Delete the verify file after.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/sip_monitor.py
-git commit -m "feat: SIP monitor captures audio frames via pjsua2 AudioMediaPort"
-```
-
----
-
-### Task 7: Document SIP Device Provisioning
-
-**Files:**
-- Modify: `docs/WSL_SETUP.md`
-
-We need a device ID and SIP credentials on ext 120 to register. RC provisions these via the /client-info/sip-provision endpoint. Document the one-time bootstrap.
-
-- [ ] **Step 1: Append to `docs/WSL_SETUP.md`**
-
-Add a new section:
-
-```markdown
-## 8. Provision SIP credentials for ext 120 (one-time)
-
-RC issues SIP credentials to a specific device. Run this helper to provision ours:
-
-```python
-# provision_sip.py (delete after you copy the output to .env)
-import os, json
-from dotenv import load_dotenv
-from ringcentral import SDK
-
-load_dotenv()
-sdk = SDK(os.environ['RC_CLIENT_ID'], os.environ['RC_CLIENT_SECRET'], os.environ['RC_SERVER'])
-platform = sdk.platform()
-platform.login(jwt=os.environ['RC_JWT'])
-
-body = {
-    "sipInfo": [{"transport": "UDP"}],
-    "device": {"computerName": "sfw-call-bridge"},
+export async function appendTranscript(sessionId: string, chunk: string): Promise<void> {
+  const key = `call:${sessionId}:transcript`;
+  const existing = (await redis.get<string>(key)) ?? "";
+  const next = existing ? `${existing} ${chunk}`.trim() : chunk;
+  await redis.set(key, next, { ex: CALL_TTL_SECONDS });
 }
-resp = platform.post("/restapi/v1.0/client-info/sip-provision", body=body)
-data = resp.json_dict()
-print(json.dumps(data, indent=2))
 
-info = data["sipInfo"][0]
-print("\nAdd these to .env:")
-print(f"SIP_DOMAIN={info['domain']}")
-print(f"SIP_USERNAME={info['username']}")
-print(f"SIP_PASSWORD={info['password']}")
-print(f"SIP_AUTH_ID={info['authorizationId']}")
-print(f"SIP_DEVICE_ID={data['device']['id']}")
+export async function clearTranscript(sessionId: string): Promise<void> {
+  await redis.del(`call:${sessionId}:transcript`);
+}
 ```
+
+Note: we do not write `call:{id}:state` or manipulate `calls:active` — Python still owns those.
+
+- [ ] **Step 2: Commit**
 
 ```bash
-python provision_sip.py
+git add softphone-bridge/src/redis.ts
+git commit -m "feat(bridge): Redis transcript writer matching Python CallStore schema"
 ```
 
-Copy the five lines it prints into your `.env`, then delete the script:
-```bash
-rm provision_sip.py
-```
+---
 
-**Security note:** The password in `.env` is effectively a permanent credential. Treat it like the RC JWT.
+### Task 4: Sidecar — Deepgram live client wrapper
+
+**Files:** Create `softphone-bridge/src/deepgram.ts`
+
+One connection per supervised session. Sends mu-law 8 kHz RTP payload bytes; emits finalized transcript chunks.
+
+- [ ] **Step 1: Create `softphone-bridge/src/deepgram.ts`**
+
+```typescript
+import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
+import { config } from "./config.js";
+
+export interface DeepgramSession {
+  sendAudio(payload: Buffer): void;
+  close(): Promise<void>;
+}
+
+export function openDeepgram(opts: {
+  onFinal: (text: string) => void;
+  onError?: (err: Error) => void;
+}): DeepgramSession {
+  const dg = createClient(config.deepgramKey);
+  const live = dg.listen.live({
+    model: "nova-3",
+    encoding: "mulaw",
+    sample_rate: 8000,
+    interim_results: true,
+    smart_format: true,
+    punctuate: true,
+  });
+
+  live.on(LiveTranscriptionEvents.Transcript, (msg) => {
+    if (!msg.is_final) return;
+    const text = msg.channel?.alternatives?.[0]?.transcript?.trim();
+    if (text) opts.onFinal(text);
+  });
+  live.on(LiveTranscriptionEvents.Error, (err) => {
+    opts.onError?.(err as Error);
+  });
+
+  return {
+    sendAudio(payload) {
+      live.send(payload);
+    },
+    async close() {
+      live.finish();
+    },
+  };
+}
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/WSL_SETUP.md
-git commit -m "docs: SIP device provisioning for Phase 2"
+git add softphone-bridge/src/deepgram.ts
+git commit -m "feat(bridge): Deepgram live STT wrapper (mulaw/8k)"
 ```
 
 ---
 
-### Task 8: Live Transcriber Orchestrator
+### Task 5: Sidecar — per-session supervisor
 
-**Files:**
-- Create: `src/live_transcriber.py`
-- Create: `tests/test_live_transcriber.py`
+**Files:** Create `softphone-bridge/src/supervisor.ts`
 
-Given a `telephonySessionId` and `agentExtensionId`, this orchestrator:
-1. Opens a Deepgram stream
-2. Calls Supervision API to pull the call's audio to our SIP monitor
-3. Routes audio frames from the SIP monitor → Deepgram
-4. Accumulates finalized transcripts into Redis for that session
-5. Cleans up when the call ends
+One instance per supervised call. Dials `*80`, sends `<agentExtNumber>#` on answer, pipes RTP payload to Deepgram, writes finals to Redis.
 
-The SIP monitor is shared across all sessions (it runs one registration), so we need a dispatcher that maps incoming SIP calls → session IDs → Deepgram streams. For Phase 2 MVP, we support **one active supervision at a time** — simplest correct behavior, can be generalized in Phase 3.
+- [ ] **Step 1: Create `softphone-bridge/src/supervisor.ts`**
 
-- [ ] **Step 1: Write failing test for `LiveTranscriber` basic flow**
+```typescript
+import type Softphone from "ringcentral-softphone";
+import { openDeepgram, DeepgramSession } from "./deepgram.js";
+import { appendTranscript, clearTranscript } from "./redis.js";
 
-File: `tests/test_live_transcriber.py`
+export interface Supervisor {
+  sessionId: string;
+  stop(): Promise<void>;
+}
 
-```python
-import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from src.redis_store import CallStore
-from src.live_transcriber import LiveTranscriber
+export async function superviseCall(
+  softphone: Softphone,
+  sessionId: string,
+  agentExtNumber: string,
+): Promise<Supervisor> {
+  console.log(`[sup:${sessionId}] starting — agent ext ${agentExtNumber}`);
 
+  await clearTranscript(sessionId);
 
-@pytest.fixture
-def store(fake_redis):
-    return CallStore(fake_redis)
+  const dg: DeepgramSession = openDeepgram({
+    onFinal: (text) => {
+      console.log(`[sup:${sessionId}] final: ${text}`);
+      void appendTranscript(sessionId, text);
+    },
+    onError: (err) => console.error(`[sup:${sessionId}] deepgram error`, err),
+  });
 
+  // *80 is RC's in-call monitoring feature code. DTMF-in the agent extension number
+  // with a trailing # to select which agent to listen to.
+  const callSession = await softphone.call("*80");
 
-@pytest.mark.asyncio
-async def test_start_session_opens_deepgram_and_calls_supervision(store):
-    sip_monitor = MagicMock()
-    platform = MagicMock()
+  let stopped = false;
+  const stop = async () => {
+    if (stopped) return;
+    stopped = true;
+    try {
+      await callSession.hangup();
+    } catch (e) { /* may already be gone */ }
+    await dg.close();
+    console.log(`[sup:${sessionId}] stopped`);
+  };
 
-    fake_stream = AsyncMock()
-    fake_stream.open = AsyncMock()
-    fake_stream.close = AsyncMock()
+  callSession.once("answered", async () => {
+    await callSession.sendDTMFs(`${agentExtNumber}#`, 500);
+    console.log(`[sup:${sessionId}] monitoring active`);
+  });
 
-    async def no_transcripts():
-        if False:
-            yield
+  callSession.on("audioPacket", (rtp: { payload: Buffer }) => {
+    dg.sendAudio(rtp.payload);
+  });
 
-    fake_stream.transcripts = no_transcripts
+  callSession.once("disposed", () => {
+    void stop();
+  });
 
-    with patch("src.live_transcriber.DeepgramStream", return_value=fake_stream), \
-         patch("src.live_transcriber.start_supervision") as start_sup:
-        start_sup.return_value = {"id": "party-x"}
+  callSession.once("busy", () => {
+    console.warn(`[sup:${sessionId}] busy — supervision refused`);
+    void stop();
+  });
 
-        lt = LiveTranscriber(store=store, sip_monitor=sip_monitor, platform=platform,
-                             device_id="dev-1", deepgram_api_key="k")
-        await lt.start_session("s-100", "119")
-
-    fake_stream.open.assert_awaited()
-    start_sup.assert_called_once_with(platform, "s-100", "dev-1", "119")
-    assert lt._active_session == "s-100"
-
-
-@pytest.mark.asyncio
-async def test_transcript_chunks_appended_to_redis(store):
-    sip_monitor = MagicMock()
-    platform = MagicMock()
-
-    fake_stream = AsyncMock()
-    fake_stream.open = AsyncMock()
-    fake_stream.close = AsyncMock()
-
-    async def gen():
-        yield "Hi this is Doug"
-        yield "from SFW Construction"
-
-    fake_stream.transcripts = gen
-
-    with patch("src.live_transcriber.DeepgramStream", return_value=fake_stream), \
-         patch("src.live_transcriber.start_supervision", return_value={"id": "party-x"}):
-        lt = LiveTranscriber(store=store, sip_monitor=sip_monitor, platform=platform,
-                             device_id="dev-1", deepgram_api_key="k")
-        await lt.start_session("s-100", "119")
-        # Let the consumer task run
-        await asyncio.sleep(0.05)
-        await lt.stop_session("s-100")
-
-    transcript = store.get_transcript("s-100")
-    assert transcript is not None
-    assert "Doug" in transcript
-    assert "SFW Construction" in transcript
+  return { sessionId, stop };
+}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+**Note on codec:** the sidecar is configured with `codec: "PCMU/8000"`. For PCMU the SDK emits raw mu-law RTP payload bytes (confirmed in SDK README) — which is exactly what Deepgram wants with `encoding=mulaw&sample_rate=8000`. No transcoding.
 
-Run: `pytest tests/test_live_transcriber.py -v`
-Expected: FAIL — `ModuleNotFoundError`
+- [ ] **Step 2: Commit**
 
-- [ ] **Step 3: Implement `LiveTranscriber`**
+```bash
+git add softphone-bridge/src/supervisor.ts
+git commit -m "feat(bridge): per-session supervisor (*80 + DTMF + audio → Deepgram → Redis)"
+```
 
-File: `src/live_transcriber.py`
+---
+
+### Task 6: Sidecar — HTTP intake server
+
+**Files:** Create `softphone-bridge/src/server.ts`; replace `softphone-bridge/src/index.ts`
+
+Python POSTs session start/stop to the sidecar. Fastify + shared API-key header.
+
+- [ ] **Step 1: Create `softphone-bridge/src/server.ts`**
+
+```typescript
+import Fastify from "fastify";
+import type Softphone from "ringcentral-softphone";
+import { config } from "./config.js";
+import { superviseCall, type Supervisor } from "./supervisor.js";
+
+export function buildServer(softphone: Softphone) {
+  const app = Fastify({ logger: true });
+  const active = new Map<string, Supervisor>();
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.headers["x-bridge-key"] !== config.bridge.apiKey) {
+      reply.code(401).send({ error: "unauthorized" });
+    }
+  });
+
+  app.post<{ Body: { sessionId: string; agentExtNumber: string } }>(
+    "/sessions",
+    async (req, reply) => {
+      const { sessionId, agentExtNumber } = req.body;
+      if (!sessionId || !agentExtNumber) {
+        return reply.code(400).send({ error: "sessionId and agentExtNumber required" });
+      }
+      if (active.has(sessionId)) {
+        return reply.code(409).send({ error: "already supervising", sessionId });
+      }
+      try {
+        const sup = await superviseCall(softphone, sessionId, agentExtNumber);
+        active.set(sessionId, sup);
+        return reply.code(202).send({ sessionId, status: "supervising" });
+      } catch (err) {
+        req.log.error({ err }, "supervision start failed");
+        return reply.code(500).send({ error: String(err) });
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>("/sessions/:id", async (req, reply) => {
+    const sup = active.get(req.params.id);
+    if (!sup) return reply.code(404).send({ error: "not found" });
+    await sup.stop();
+    active.delete(req.params.id);
+    return reply.code(204).send();
+  });
+
+  app.get("/health", async () => ({ ok: true, active: [...active.keys()] }));
+
+  return app;
+}
+```
+
+- [ ] **Step 2: Replace `softphone-bridge/src/index.ts` with the real entrypoint**
+
+```typescript
+import Softphone from "ringcentral-softphone";
+import { config } from "./config.js";
+import { buildServer } from "./server.js";
+
+const softphone = new Softphone({
+  domain: config.sip.domain,
+  outboundProxy: config.sip.outboundProxy,
+  username: config.sip.username,
+  password: config.sip.password,
+  authorizationId: config.sip.authorizationId,
+  codec: "PCMU/8000",
+});
+
+await softphone.register();
+console.log("[bridge] softphone registered");
+
+const server = buildServer(softphone);
+await server.listen({ host: "0.0.0.0", port: config.bridge.port });
+console.log(`[bridge] HTTP listening on :${config.bridge.port}`);
+
+async function shutdown() {
+  console.log("[bridge] shutting down");
+  await server.close();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+```
+
+- [ ] **Step 3: Typecheck**
+
+```bash
+cd softphone-bridge && npm run typecheck
+```
+
+**Pass criteria:** no errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add softphone-bridge/src/server.ts softphone-bridge/src/index.ts
+git commit -m "feat(bridge): HTTP intake server (POST/DELETE /sessions, /health)"
+```
+
+---
+
+### Task 7: Python — sidecar client
+
+**Files:** Create `src/sidecar_client.py` and `tests/test_sidecar_client.py`
+
+- [ ] **Step 1: Failing test**
 
 ```python
-import asyncio
-import logging
+# tests/test_sidecar_client.py
+import pytest, respx, httpx
+from src.sidecar_client import SidecarClient
 
-from src.deepgram_stream import DeepgramStream
-from src.redis_store import CallStore
-from src.supervision import start_supervision, SupervisionError
+@pytest.mark.asyncio
+@respx.mock
+async def test_start_supervision_posts_expected_payload():
+    route = respx.post("http://bridge.local/sessions").mock(
+        return_value=httpx.Response(202, json={"sessionId": "s-1", "status": "supervising"})
+    )
+    client = SidecarClient("http://bridge.local", api_key="k")
+    await client.start_supervision("s-1", "101")
+    assert route.called
+    assert route.calls.last.request.headers["x-bridge-key"] == "k"
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stop_supervision_deletes():
+    route = respx.delete("http://bridge.local/sessions/s-1").mock(
+        return_value=httpx.Response(204)
+    )
+    client = SidecarClient("http://bridge.local", api_key="k")
+    await client.stop_supervision("s-1")
+    assert route.called
+```
+
+- [ ] **Step 2: Run test — expect `ModuleNotFoundError`**
+
+```bash
+pytest tests/test_sidecar_client.py -v
+```
+
+- [ ] **Step 3: Implement `src/sidecar_client.py`**
+
+```python
+import logging
+import httpx
 
 logger = logging.getLogger(__name__)
 
 
-class LiveTranscriber:
-    """Orchestrates Supervision API + SIP audio + Deepgram + Redis for one call at a time.
+class SidecarClient:
+    """Thin async client for the softphone-bridge sidecar."""
 
-    Phase 2 MVP: single active session. Extend to a dict of sessions for Phase 3.
-    """
+    def __init__(self, base_url: str, api_key: str, timeout: float = 5.0):
+        self._base = base_url.rstrip("/")
+        self._headers = {"x-bridge-key": api_key, "content-type": "application/json"}
+        self._timeout = timeout
 
-    def __init__(self, store: CallStore, sip_monitor, platform,
-                 device_id: str, deepgram_api_key: str):
-        self.store = store
-        self.sip_monitor = sip_monitor
-        self.platform = platform
-        self.device_id = device_id
-        self.deepgram_api_key = deepgram_api_key
+    async def start_supervision(self, session_id: str, agent_ext_number: str) -> None:
+        url = f"{self._base}/sessions"
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.post(url, headers=self._headers,
+                             json={"sessionId": session_id,
+                                   "agentExtNumber": agent_ext_number})
+            if r.status_code not in (202, 409):
+                logger.warning("bridge start_supervision %s -> %s %s",
+                               session_id, r.status_code, r.text)
 
-        self._active_session: str | None = None
-        self._stream: DeepgramStream | None = None
-        self._consumer_task: asyncio.Task | None = None
-
-    async def start_session(self, session_id: str, agent_extension_id: str) -> None:
-        if self._active_session is not None:
-            logger.warning("Already monitoring %s, skipping %s",
-                           self._active_session, session_id)
-            return
-
-        logger.info("Starting live transcription for session %s", session_id)
-        self._stream = DeepgramStream(api_key=self.deepgram_api_key)
-        await self._stream.open()
-
-        try:
-            start_supervision(self.platform, session_id, self.device_id, agent_extension_id)
-        except SupervisionError:
-            logger.error("Supervision failed for %s — aborting", session_id)
-            await self._stream.close()
-            self._stream = None
-            return
-
-        self._active_session = session_id
-        # Wire SIP audio frames into Deepgram
-        self.sip_monitor.on_audio_frame = self._audio_callback
-        self._consumer_task = asyncio.create_task(self._consume_transcripts(session_id))
-
-    def _audio_callback(self, frame: bytes) -> None:
-        """Called from the SIP thread on each audio frame. Schedules send on event loop."""
-        if self._stream is None:
-            return
-        loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(self._stream.send_audio(frame), loop)
-
-    async def _consume_transcripts(self, session_id: str) -> None:
-        assert self._stream is not None
-        accumulated = self.store.get_transcript(session_id) or ""
-        try:
-            async for chunk in self._stream.transcripts():
-                accumulated = (accumulated + " " + chunk).strip() if accumulated else chunk
-                self.store.store_transcript(session_id, accumulated)
-                logger.info("Transcript chunk for %s: %s", session_id, chunk)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("Transcript consumer error")
-
-    async def stop_session(self, session_id: str) -> None:
-        if self._active_session != session_id:
-            return
-        logger.info("Stopping live transcription for session %s", session_id)
-        if self._consumer_task:
-            self._consumer_task.cancel()
-            try:
-                await self._consumer_task
-            except asyncio.CancelledError:
-                pass
-            self._consumer_task = None
-        if self._stream:
-            await self._stream.close()
-            self._stream = None
-        self.sip_monitor.on_audio_frame = None
-        self._active_session = None
+    async def stop_supervision(self, session_id: str) -> None:
+        url = f"{self._base}/sessions/{session_id}"
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.delete(url, headers=self._headers)
+            if r.status_code not in (204, 404):
+                logger.warning("bridge stop_supervision %s -> %s %s",
+                               session_id, r.status_code, r.text)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run test — expect PASS**
 
-Run: `pytest tests/test_live_transcriber.py -v`
-Expected: 2 PASS
+```bash
+pytest tests/test_sidecar_client.py -v
+```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/live_transcriber.py tests/test_live_transcriber.py
-git commit -m "feat: live transcriber orchestrator — Supervision + SIP + Deepgram + Redis"
+git add src/sidecar_client.py tests/test_sidecar_client.py
+git commit -m "feat: async client for softphone-bridge sidecar"
 ```
 
 ---
 
-### Task 9: Wire Call Monitor to Live Transcriber
+### Task 8: Wire `call_monitor` to trigger supervision
 
-**Files:**
-- Modify: `src/call_monitor.py`
-- Modify: `tests/test_call_monitor.py`
+**Files:** Modify `src/call_monitor.py`, `tests/test_call_monitor.py`
 
-When the Phase 1 call monitor sees `status=Answered` and the call's rep extension is in `MONITORED_EXTENSIONS`, it should invoke `LiveTranscriber.start_session()`. When the call disconnects, `stop_session()`.
+Two changes: (1) capture `extensionNumber` (not just `extensionId`) in stored call data, because the sidecar needs the dialed number; (2) on `Answered` for a monitored extension, fire `start_supervision`; on end, `stop_supervision`.
 
-Pass the transcriber as an optional parameter so all existing tests keep working.
-
-- [ ] **Step 1: Add test for transcriber invocation on Answered**
-
-Append to `tests/test_call_monitor.py`. These tests are async because `process_telephony_event` schedules transcriber calls via `asyncio.create_task`, which requires a running event loop.
+- [ ] **Step 1: Add failing tests to `tests/test_call_monitor.py`**
 
 ```python
 import asyncio
@@ -1050,71 +734,57 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.mark.asyncio
-async def test_answered_call_triggers_transcriber_when_ext_is_monitored(store):
-    transcriber = MagicMock()
-    transcriber.start_session = AsyncMock()
-
+async def test_answered_triggers_sidecar_when_monitored(store):
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
     event = make_event("s-200", "Answered",
-                       to_info={"extensionId": "119", "name": "Doug Stoker"})
-    process_telephony_event(event, store, transcriber=transcriber,
-                            monitored_extensions=["119"])
-    # Let the scheduled task run
+                       to_info={"extensionId": "119", "extensionNumber": "101",
+                                "name": "Doug Stoker"})
+    process_telephony_event(event, store, sidecar=sidecar, monitored_extensions=["119"])
     await asyncio.sleep(0)
-
-    transcriber.start_session.assert_awaited_once_with("s-200", "119")
+    sidecar.start_supervision.assert_awaited_once_with("s-200", "101")
 
 
 @pytest.mark.asyncio
-async def test_answered_call_skipped_when_ext_not_monitored(store):
-    transcriber = MagicMock()
-    transcriber.start_session = AsyncMock()
-
+async def test_answered_skipped_when_not_monitored(store):
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
     event = make_event("s-200", "Answered",
-                       to_info={"extensionId": "999", "name": "Other"})
-    process_telephony_event(event, store, transcriber=transcriber,
-                            monitored_extensions=["119"])
+                       to_info={"extensionId": "999", "extensionNumber": "999"})
+    process_telephony_event(event, store, sidecar=sidecar, monitored_extensions=["119"])
     await asyncio.sleep(0)
-
-    transcriber.start_session.assert_not_called()
+    sidecar.start_supervision.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_disconnected_call_stops_transcriber(store):
-    transcriber = MagicMock()
-    transcriber.start_session = AsyncMock()
-    transcriber.stop_session = AsyncMock()
-
+async def test_disconnected_stops_sidecar(store):
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    sidecar.stop_supervision = AsyncMock()
     process_telephony_event(make_event("s-200", "Answered",
-                                       to_info={"extensionId": "119"}),
-                            store, transcriber=transcriber,
-                            monitored_extensions=["119"])
+                                       to_info={"extensionId": "119",
+                                                "extensionNumber": "101"}),
+                            store, sidecar=sidecar, monitored_extensions=["119"])
     await asyncio.sleep(0)
     process_telephony_event(make_event("s-200", "Disconnected",
-                                       to_info={"extensionId": "119"}),
-                            store, transcriber=transcriber,
-                            monitored_extensions=["119"])
+                                       to_info={"extensionId": "119",
+                                                "extensionNumber": "101"}),
+                            store, sidecar=sidecar, monitored_extensions=["119"])
     await asyncio.sleep(0)
-
-    transcriber.stop_session.assert_awaited_once_with("s-200")
+    sidecar.stop_supervision.assert_awaited_once_with("s-200")
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 2: Run — expect FAIL (`sidecar` kwarg not accepted)**
 
-Run: `pytest tests/test_call_monitor.py -v`
-Expected: FAIL on the three new tests — `process_telephony_event() got an unexpected keyword argument 'transcriber'`
+```bash
+pytest tests/test_call_monitor.py -v
+```
 
 - [ ] **Step 3: Modify `process_telephony_event` in `src/call_monitor.py`**
 
-Replace the full function:
-
 ```python
 def process_telephony_event(event: dict, store: CallStore,
-                            transcriber=None, monitored_extensions=None) -> None:
-    """Process a single RC telephony session notification and update store.
-
-    If `transcriber` is provided and the call is on a monitored extension,
-    invoke live transcription on Answered / teardown on Disconnected.
-    """
+                            sidecar=None, monitored_extensions=None) -> None:
     body = event.get("body", {})
     session_id = body.get("telephonySessionId")
     if not session_id:
@@ -1131,6 +801,7 @@ def process_telephony_event(event: dict, store: CallStore,
     from_info = party.get("from", {})
     to_info = party.get("to", {})
     ext_id = to_info.get("extensionId") or from_info.get("extensionId")
+    ext_number = to_info.get("extensionNumber") or from_info.get("extensionNumber")
 
     call_data = {
         "sessionId": session_id,
@@ -1143,226 +814,151 @@ def process_telephony_event(event: dict, store: CallStore,
     if status in END_STATUSES:
         logger.info("Call ended: %s (status=%s)", session_id, status)
         store.complete_call(session_id)
-        if transcriber and ext_id and _is_monitored(ext_id, monitored_extensions):
-            asyncio.create_task(transcriber.stop_session(session_id))
+        if sidecar and ext_id and _is_monitored(ext_id, monitored_extensions):
+            asyncio.create_task(sidecar.stop_supervision(session_id))
     else:
         logger.info("Call event: %s (status=%s)", session_id, status)
         store.store_call(session_id, call_data)
-        if (transcriber and status == "Answered" and ext_id
+        if (sidecar and status == "Answered" and ext_id and ext_number
                 and _is_monitored(ext_id, monitored_extensions)):
-            asyncio.create_task(transcriber.start_session(session_id, ext_id))
+            asyncio.create_task(sidecar.start_supervision(session_id, ext_number))
 
 
 def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
-    """An empty / None monitored list means 'monitor everything'."""
     if not monitored:
-        return True
+        return False  # Phase 2: empty = disabled (conservative — don't supervise everyone)
     return ext_id in monitored
 ```
 
-- [ ] **Step 4: Modify `on_message` inside `_run_ws_session` to pass the new args**
+Note: empty monitored list = disabled (opposite of Rev 1). This prevents accidental blanket supervision if the env var is forgotten.
 
-Find the `process_telephony_event(event, store)` call inside `on_message` and replace with:
+- [ ] **Step 4: Plumb `sidecar` through `run_monitor` / `_run_ws_session`**
 
-```python
-        process_telephony_event(event, store,
-                                transcriber=transcriber,
-                                monitored_extensions=Config.MONITORED_EXTENSIONS)
+Add an optional `sidecar=None` parameter to both, capture in `on_message`'s closure, and pass `Config.MONITORED_EXTENSIONS` in the `process_telephony_event` call.
+
+- [ ] **Step 5: Run tests**
+
+```bash
+pytest -v
 ```
 
-Then modify `run_monitor` and `_run_ws_session` to accept/forward a `transcriber` parameter:
-
-```python
-async def run_monitor(store: CallStore, transcriber=None) -> None:
-```
-(pass through to `_run_ws_session(sdk, event_filters, store, transcriber)`)
-
-```python
-async def _run_ws_session(sdk, event_filters, store: CallStore, transcriber=None) -> None:
-```
-(capture `transcriber` in `on_message`'s closure)
-
-- [ ] **Step 5: Run all tests to confirm everything passes**
-
-Run: `pytest -v`
-Expected: all existing tests + 3 new ones PASS
+**Pass criteria:** all Phase 1 tests still pass, plus 3 new ones.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/call_monitor.py tests/test_call_monitor.py
-git commit -m "feat: call monitor triggers live transcriber on Answered for monitored extensions"
+git commit -m "feat: call monitor triggers sidecar supervision on Answered for monitored exts"
 ```
 
 ---
 
-### Task 10: Live Entrypoint for WSL/Linux
+### Task 9: Wire sidecar client into local runner
 
-**Files:**
-- Create: `run_live.py`
+**Files:** Modify `run_local.py` (or wherever the Python process starts) — passes `SidecarClient` into `run_monitor` when configured.
 
-Replacement for `run_local.py` when running on Linux. Wires everything together: FastAPI + call monitor + SIP monitor + live transcriber.
+- [ ] **Step 1: Modify runner**
 
-- [ ] **Step 1: Create `run_live.py`**
+Pseudo-patch (adapt to the actual runner file):
 
 ```python
-"""Linux/WSL entrypoint — runs API, call monitor, SIP monitor, and live transcription.
+from src.sidecar_client import SidecarClient
 
-Not used on Windows (pjsua2 won't install cleanly). Phase 2 requires this on Linux.
-"""
-import asyncio
-import logging
+sidecar = None
+if Config.SOFTPHONE_BRIDGE_URL and Config.SOFTPHONE_BRIDGE_API_KEY:
+    sidecar = SidecarClient(Config.SOFTPHONE_BRIDGE_URL, Config.SOFTPHONE_BRIDGE_API_KEY)
+    logger.info("Live transcription enabled via %s", Config.SOFTPHONE_BRIDGE_URL)
+else:
+    logger.info("Live transcription disabled (no sidecar configured)")
 
-import fakeredis
-import uvicorn
-from ringcentral import SDK
-
-from src.api.main import create_app
-from src.call_monitor import run_monitor
-from src.config import Config
-from src.live_transcriber import LiveTranscriber
-from src.redis_store import CallStore
-from src.sip_monitor import SipMonitor
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-
-async def main():
-    store = CallStore(fakeredis.FakeRedis(decode_responses=True))
-    app = create_app(store)
-
-    # SIP registration (blocks until registered, runs pjsua2 event loop in its own thread)
-    logger.info("Starting SIP monitor...")
-    sip = SipMonitor()
-    sip.start()
-    logger.info("SIP registered; ready to accept supervise calls")
-
-    # Dedicated RC platform for supervision API calls
-    sdk = SDK(Config.RC_CLIENT_ID, Config.RC_CLIENT_SECRET, Config.RC_SERVER)
-    platform = sdk.platform()
-    platform.login(jwt=Config.RC_JWT)
-
-    transcriber = LiveTranscriber(
-        store=store,
-        sip_monitor=sip,
-        platform=platform,
-        device_id=Config.SIP_DEVICE_ID,
-        deepgram_api_key=Config.DEEPGRAM_API_KEY,
-    )
-
-    uvicorn_cfg = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
-    server = uvicorn.Server(uvicorn_cfg)
-
-    logger.info("API on http://localhost:8000; monitoring extensions: %s",
-                Config.MONITORED_EXTENSIONS or "ALL")
-    await asyncio.gather(server.serve(), run_monitor(store, transcriber=transcriber))
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nStopped.")
+await run_monitor(store, sidecar=sidecar)
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
-git add run_live.py
-git commit -m "feat: run_live.py entrypoint with SIP + live transcription (Linux/WSL only)"
+git add run_local.py
+git commit -m "feat: inject sidecar client into call monitor when configured"
 ```
 
 ---
 
-### Task 11: End-to-End Smoke Test
+### Task 10: End-to-end smoke test
 
-This is manual — exercises the full Phase 2 pipeline against real RC and Deepgram.
+Manual — exercises the full pipeline against real RC and Deepgram.
 
-- [ ] **Step 1: Full test suite**
+- [ ] **Step 1: All unit tests pass**
 
 ```bash
-cd ~/chat-rail && source .venv/bin/activate
 pytest -v
+cd softphone-bridge && npm run typecheck && cd ..
 ```
 
-Expected: all tests pass (Phase 1's 31 + Phase 2's 5 ≈ 36+).
+- [ ] **Step 2: Populate both `.env` files**
 
-- [ ] **Step 2: Populate `.env` with all credentials**
+Root `.env`: Phase 1 vars + `SOFTPHONE_BRIDGE_URL=http://localhost:8787` + `SOFTPHONE_BRIDGE_API_KEY=<same-as-sidecar>` + `MONITORED_EXTENSIONS=119` (or whichever rep's extension ID you're testing).
 
-Confirm `.env` has:
-- All Phase 1 RC vars
-- `DEEPGRAM_API_KEY`
-- `CALL_BRIDGE_API_KEY`
-- `SIP_DOMAIN`, `SIP_USERNAME`, `SIP_PASSWORD`, `SIP_AUTH_ID`, `SIP_DEVICE_ID` (from Task 7 provisioning)
-- `MONITORED_EXTENSIONS` — at minimum one rep's extension ID for the test
+`softphone-bridge/.env`: from Task 0 output + Deepgram + Redis + `BRIDGE_API_KEY=<same-as-root>`.
 
-- [ ] **Step 3: Start `run_live.py`**
+- [ ] **Step 3: Start both processes (two terminals)**
 
 ```bash
-python run_live.py
+# Terminal A — sidecar
+cd softphone-bridge && npm run dev
+
+# Terminal B — Python stack
+python run_local.py
 ```
 
-Expected log sequence:
+Expected in Terminal A:
 ```
-Starting SIP monitor...
-SIP reg state: True (code=200)
-SIP registered; ready to accept supervise calls
-API on http://localhost:8000; monitoring extensions: [...]
+[bridge] softphone registered
+[bridge] HTTP listening on :8787
+```
+
+Expected in Terminal B:
+```
 Authenticated with RingCentral
+Live transcription enabled via http://localhost:8787
 Subscription active — listening for call events
 ```
 
-- [ ] **Step 4: Make a test call**
+- [ ] **Step 4: Make a call to/from a monitored extension**
 
-Have a monitored rep answer a call. Watch for log lines:
-```
-Call event: s-XXX (status=Answered)
-Starting live transcription for session s-XXX
-Deepgram WS connected
-SIP incoming call: id=...
-Audio transmit started on this call
-Transcript chunk for s-XXX: Hi this is ...
-Transcript chunk for s-XXX: how can I help
-```
+Expected log sequence:
+- Terminal B: `Call event: s-XXX (status=Answered)`
+- Terminal A: `[sup:s-XXX] starting — agent ext 101` → `[sup:s-XXX] monitoring active` → `[sup:s-XXX] final: <words>` repeatedly.
 
 - [ ] **Step 5: Query the API during the call**
 
 ```bash
 curl -H "x-api-key: $CALL_BRIDGE_API_KEY" \
-    http://localhost:8000/api/calls/latest?rep=<MONITORED_EXT>
+    http://localhost:8000/api/calls/latest?rep=<EXT_ID>
 ```
 
-Expected: the response's `transcript` field contains what's been said so far in the call.
+Expected: `transcript` field contains what's been said so far.
 
 - [ ] **Step 6: Hang up and verify cleanup**
 
-Log should show:
-```
-Call ended: s-XXX
-Stopping live transcription for session s-XXX
-Deepgram WS closed
-```
+Terminal A: `[sup:s-XXX] stopped`
+Terminal B: `Call ended: s-XXX`
 
-- [ ] **Step 7: Commit any fixes from the smoke test**
-
-```bash
-git add -A
-git commit -m "fix: Phase 2 adjustments from end-to-end smoke test"
-```
-(Only if changes were needed.)
+- [ ] **Step 7: Commit any fixes**
 
 ---
 
 ## Known Risks & Mitigations
 
-1. **pjsua2 build may not work on the first try** — common issues: missing libasound2-dev, incorrect Python path when running `setup.py install`. If Task 1's setup guide breaks, the fallback is prebuilt Docker images (`andrius/asterisk` family) or `baresip` — but we keep `pjsua2` as the default because it's the reference Python/SIP tool.
+1. **Device `677386052` is the wrong type.** Task 0 catches this. If the type is `SoftPhone` (API) / "RingCentral Phone app" (GUI), we need to create a new "Existing Phone" device in the RC admin portal. This is a ~2-minute GUI operation, not a blocker.
 
-2. **Supervision API may reject our first call** — most common cause is ext 120 not being a monitor in the Sales group (user confirmed ✅). Second most common: `supervisorDeviceId` mismatch — make sure you use the device ID from Task 7's provisioning. If you see "403 Not enough permissions," re-check the monitor group membership in RC admin.
+2. **Supervision refused by RC** (`busy` event or DTMF reaches dead air). Most common cause: ext 120 is not a monitor in the Sales group, or the target rep isn't a member of the group. Dakota confirmed monitor membership ✅, but double-check the target rep is in the group too. Second cause: feature code `*80` is not enabled on our account — verify via RC admin → Phone System → Auto Receptionist → Dialing Plan / Feature Codes.
 
-3. **Deepgram may require PCM mu-law format while pjsua2 delivers PCM 16-bit linear** — if transcripts come back empty or garbled, the audio format is the likely culprit. Check `_AudioSink`'s format config in Task 6 and Deepgram's `encoding` param in Task 4 — both must agree. Currently set to 8kHz 16-bit linear on both sides.
+3. **Codec mismatch (silent transcripts).** Sidecar must be configured `codec: "PCMU/8000"` AND Deepgram must be `encoding=mulaw&sample_rate=8000`. If either drifts (e.g. someone changes the softphone codec to OPUS), Deepgram sees garbage and emits empty transcripts. Both are set in Task 4/5 — don't change without changing both.
 
-4. **Single-session limit (Phase 2 MVP)** — if two calls are answered simultaneously on monitored extensions, the second one is skipped. Phase 3 will generalize to N concurrent sessions.
+4. **Concurrent supervised calls.** The SDK's outbound-call limit per registration isn't documented precisely. For MVP we assume N≤3 concurrent sessions (SFW has 3 active reps typically). The supervisor map in Task 6 is already per-session keyed, so multiple concurrent supervisions work in principle — but if RC enforces a per-device concurrency cap, we'll see failures at the `*80` call step. Fallback: multiple devices on ext 120 (create N "Existing Phone" devices, round-robin through their credentials).
+
+5. **Sidecar deployment — where does it live?** Vercel serverless is wrong for a long-lived SIP client. Simplest path: same box as the Python call monitor (which is also long-lived). If that box is the user's laptop during development, production needs a small VPS or container. This is the same deployment question Phase 1's call monitor already has — not a new problem, but worth surfacing.
+
+6. **Redis write contention.** Sidecar and Python both write to `call:{id}:transcript` — but only the sidecar writes it, and only Python reads it. No contention. `call:{id}:state` is Python-only. Confirmed safe.
+
+7. **Latency budget.** Audio packet → Deepgram → finalize → Redis → GPT fetch = roughly 1–3s end-to-end. Deepgram final-result latency (~300–800ms on nova-3) is the dominant term. Acceptable for in-call coaching.
