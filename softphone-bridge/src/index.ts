@@ -1,6 +1,13 @@
-import Softphone from "ringcentral-softphone";
+import SoftphoneDefault from "ringcentral-softphone";
 import { config } from "./config.js";
 import { buildServer } from "./server.js";
+
+// Interop: ringcentral-softphone ships CJS + ESM dists but its package.json
+// lacks "type": "module", so Node's default import may return the CJS
+// module.exports wrapper { default: [class], __esModule: true } instead of
+// the class itself. Unwrap when that's the case.
+const Softphone = (SoftphoneDefault as unknown as { default?: typeof SoftphoneDefault })
+  .default ?? SoftphoneDefault;
 
 const softphone = new Softphone({
   domain: config.sip.domain,
