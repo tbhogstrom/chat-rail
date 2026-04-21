@@ -32,3 +32,12 @@ class Config:
 
     # TTLs (seconds)
     CALL_TTL: int = 3600  # 1 hour after call ends
+
+    # Softphone sidecar (Phase 2)
+    SOFTPHONE_BRIDGE_URL: str = os.environ.get("SOFTPHONE_BRIDGE_URL", "")
+    SOFTPHONE_BRIDGE_API_KEY: str = os.environ.get("SOFTPHONE_BRIDGE_API_KEY", "")
+
+    # Extension IDs to live-transcribe. Empty = disabled.
+    MONITORED_EXTENSIONS: list[str] = [
+        e.strip() for e in os.environ.get("MONITORED_EXTENSIONS", "").split(",") if e.strip()
+    ]
