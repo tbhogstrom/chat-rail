@@ -15,8 +15,13 @@ END_STATUSES = {"Disconnected", "Gone", "VoiceMail"}
 
 
 def process_telephony_event(event: dict, store: CallStore,
-                            sidecar=None, monitored_extensions=None) -> None:
-    """Process a single RC telephony session notification and update store."""
+                            sidecar=None, monitored_extensions=None,
+                            ext_number_map=None) -> None:
+    """Process a single RC telephony session notification and update store.
+
+    Supervision trigger scans ALL parties (not just parties[0]) because
+    queue/IVR-routed calls put the actual rep beyond index 0.
+    """
     body = event.get("body", {})
     session_id = body.get("telephonySessionId")
     if not session_id:
@@ -27,13 +32,12 @@ def process_telephony_event(event: dict, store: CallStore,
     if not parties:
         return
 
+    # Primary party drives state storage (back-compat with Phase 1 behavior).
     party = parties[0]
     status = party.get("status", {}).get("code", "Unknown")
     direction = party.get("direction", "Unknown")
     from_info = party.get("from", {})
     to_info = party.get("to", {})
-    ext_id = to_info.get("extensionId") or from_info.get("extensionId")
-    ext_number = to_info.get("extensionNumber") or from_info.get("extensionNumber")
 
     call_data = {
         "sessionId": session_id,
@@ -46,20 +50,55 @@ def process_telephony_event(event: dict, store: CallStore,
     if status in END_STATUSES:
         logger.info("Call ended: %s (status=%s)", session_id, status)
         store.complete_call(session_id)
-        if sidecar and ext_id and _is_monitored(ext_id, monitored_extensions):
-            asyncio.create_task(sidecar.stop_supervision(session_id))
     else:
         logger.info("Call event: %s (status=%s)", session_id, status)
         store.store_call(session_id, call_data)
-        if (sidecar and status == "Answered" and ext_id and ext_number
-                and _is_monitored(ext_id, monitored_extensions)):
-            asyncio.create_task(sidecar.start_supervision(session_id, ext_number))
+
+    # Supervision trigger — scan all parties for a monitored rep.
+    if not (sidecar and monitored_extensions):
+        return
+    for p in parties:
+        p_status = p.get("status", {}).get("code", "")
+        p_ext_id = (p.get("to", {}).get("extensionId")
+                    or p.get("from", {}).get("extensionId"))
+        if not p_ext_id or p_ext_id not in monitored_extensions:
+            continue
+        if p_status in END_STATUSES:
+            asyncio.create_task(sidecar.stop_supervision(session_id))
+            return
+        if p_status == "Answered":
+            p_ext_number = (p.get("to", {}).get("extensionNumber")
+                            or p.get("from", {}).get("extensionNumber"))
+            if not p_ext_number and ext_number_map:
+                p_ext_number = ext_number_map.get(p_ext_id)
+            if p_ext_number:
+                asyncio.create_task(sidecar.start_supervision(session_id, p_ext_number))
+                return
 
 
 def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
     if not monitored:
         return False  # Phase 2: empty = disabled (conservative)
     return ext_id in monitored
+
+
+def _load_ext_number_map(platform) -> dict[str, str]:
+    """Return {extensionId: extensionNumber} for every extension on the account.
+
+    Party records in telephony events often omit extensionNumber, so we resolve
+    it from a startup snapshot of the account's extensions.
+    """
+    try:
+        resp = platform.get("/restapi/v1.0/account/~/extension", {"perPage": 250}).json_dict()
+    except Exception as e:
+        logger.warning("Failed to load extension list for ext-number map: %s", e)
+        return {}
+    out = {}
+    for e in resp.get("records", []):
+        num = e.get("extensionNumber")
+        if num is not None:
+            out[str(e["id"])] = str(num)
+    return out
 
 
 async def run_monitor(store: CallStore, sidecar=None) -> None:
@@ -79,7 +118,11 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
             ext = platform.get("/restapi/v1.0/account/~/extension/~").json_dict()
             logger.info("Monitoring as: %s (ext %s)", ext["name"], ext["extensionNumber"])
 
-            await _run_ws_session(sdk, event_filters, store, sidecar=sidecar)
+            ext_number_map = _load_ext_number_map(platform)
+            logger.info("Loaded ext-number map for %d extensions", len(ext_number_map))
+
+            await _run_ws_session(sdk, event_filters, store, sidecar=sidecar,
+                                  ext_number_map=ext_number_map)
             backoff = 1  # reset on clean exit
         except Exception as e:
             logger.warning("WebSocket session ended: %s. Reconnecting in %ds...", e, backoff)
@@ -87,7 +130,8 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
             backoff = min(backoff * 2, 60)
 
 
-async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None) -> None:
+async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None,
+                          ext_number_map=None) -> None:
     """Run a single WebSocket session until it disconnects or errors."""
     ws_client = sdk.create_web_socket_client()
     token_data = ws_client.get_web_socket_token()
@@ -124,7 +168,8 @@ async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None) ->
 
         logger.info("RC notification: %s", json.dumps(event, default=str)[:300])
         process_telephony_event(event, store, sidecar=sidecar,
-                                monitored_extensions=Config.MONITORED_EXTENSIONS)
+                                monitored_extensions=Config.MONITORED_EXTENSIONS,
+                                ext_number_map=ext_number_map)
 
     async def on_connected(client):
         logger.info("WebSocket connected, creating subscription...")

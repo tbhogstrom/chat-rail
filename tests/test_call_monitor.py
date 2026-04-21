@@ -119,3 +119,59 @@ async def test_disconnected_stops_sidecar(store):
                             store, sidecar=sidecar, monitored_extensions=["119"])
     await asyncio.sleep(0)
     sidecar.stop_supervision.assert_awaited_once_with("s-200")
+
+
+@pytest.mark.asyncio
+async def test_queue_routed_call_triggers_supervision_on_any_party(store):
+    """Queue/IVR calls have the rep in parties[1+], not parties[0]."""
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    event = {
+        "body": {
+            "telephonySessionId": "s-queue",
+            "parties": [
+                {
+                    "status": {"code": "Answered"},
+                    "direction": "Inbound",
+                    "to": {"extensionId": "302988053", "name": "Sales Queue"},
+                    "from": {"phoneNumber": "+15551234567"},
+                },
+                {
+                    "status": {"code": "Answered"},
+                    "direction": "Inbound",
+                    "to": {"extensionId": "576959052", "extensionNumber": "119",
+                           "name": "Doug Stoker"},
+                    "from": {"phoneNumber": "+15551234567"},
+                },
+            ],
+        }
+    }
+    process_telephony_event(event, store, sidecar=sidecar,
+                            monitored_extensions=["576959052"])
+    await asyncio.sleep(0)
+    sidecar.start_supervision.assert_awaited_once_with("s-queue", "119")
+
+
+@pytest.mark.asyncio
+async def test_ext_number_map_resolves_missing_extensionnumber(store):
+    """Party records often omit extensionNumber — fall back to the map."""
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    event = {
+        "body": {
+            "telephonySessionId": "s-map",
+            "parties": [
+                {
+                    "status": {"code": "Answered"},
+                    "direction": "Inbound",
+                    "to": {"extensionId": "576959052", "name": "Doug Stoker"},
+                    "from": {"phoneNumber": "+15551234567"},
+                },
+            ],
+        }
+    }
+    process_telephony_event(event, store, sidecar=sidecar,
+                            monitored_extensions=["576959052"],
+                            ext_number_map={"576959052": "119"})
+    await asyncio.sleep(0)
+    sidecar.start_supervision.assert_awaited_once_with("s-map", "119")
