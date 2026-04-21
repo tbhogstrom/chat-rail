@@ -40,6 +40,10 @@ export async function superviseCall(
   };
 
   callSession.once("answered", async () => {
+    // RC's *80 IVR greets for a few seconds before it's ready to receive
+    // DTMF. Sending digits immediately gets them dropped during the greeting.
+    // Tyler Liu's rc-softphone-monitor-demo uses a 5s pre-DTMF wait.
+    await new Promise((r) => setTimeout(r, 5000));
     await callSession.sendDTMFs(`${agentExtNumber}#`, 500);
     console.log(`[sup:${sessionId}] monitoring active`);
   });
