@@ -1,6 +1,9 @@
-"""Local dev entrypoint — runs API + monitor in one process, backed by fakeredis.
+"""Local dev entrypoint — runs API + monitor in one process.
 
-No Upstash or Vercel required. Lets you smoke-test end-to-end before deploying.
+Uses real Upstash when KV_REST_API_URL/TOKEN are set; otherwise falls back to
+fakeredis. Real Upstash is required when the softphone sidecar is also running,
+since the sidecar writes transcripts to Upstash and the API reads from the same
+store.
 
 Usage: python run_local.py
 """
@@ -9,6 +12,7 @@ import logging
 
 import fakeredis
 import uvicorn
+from upstash_redis import Redis
 
 from src.api.main import create_app
 from src.call_monitor import run_monitor
@@ -24,7 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
-    store = CallStore(fakeredis.FakeRedis(decode_responses=True))
+    if Config.REDIS_URL and Config.REDIS_TOKEN:
+        store = CallStore(Redis(url=Config.REDIS_URL, token=Config.REDIS_TOKEN))
+        logger.info("Using Upstash Redis at %s", Config.REDIS_URL)
+    else:
+        store = CallStore(fakeredis.FakeRedis(decode_responses=True))
+        logger.info("Using fakeredis (in-process). Sidecar transcripts won't be visible here.")
+
     app = create_app(store)
 
     sidecar = None
