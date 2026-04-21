@@ -48,8 +48,15 @@ export async function superviseCall(
     console.log(`[sup:${sessionId}] monitoring active`);
   });
 
+  let audioPackets = 0;
   callSession.on("audioPacket", (...args: unknown[]) => {
     const rtp = args[0] as { payload: Buffer };
+    audioPackets++;
+    if (audioPackets === 1 || audioPackets % 250 === 0) {
+      console.log(
+        `[sup:${sessionId}] audio packets: ${audioPackets}, last size: ${rtp.payload.length}B`,
+      );
+    }
     dg.sendAudio(rtp.payload);
   });
 

@@ -22,18 +22,26 @@ export async function openDeepgram(opts: {
     Authorization: `Token ${config.deepgramKey}`,
   });
 
+  let msgCount = 0;
   socket.on("message", (msg) => {
+    msgCount++;
+    if (msgCount <= 3) {
+      console.log(`[deepgram] msg #${msgCount}:`, JSON.stringify(msg).slice(0, 400));
+    }
     if (msg.type !== "Results") return;
     if (!msg.is_final) return;
     const text = msg.channel?.alternatives?.[0]?.transcript?.trim();
     if (text) opts.onFinal(text);
   });
   socket.on("error", (err) => {
+    console.error("[deepgram] error", err);
     opts.onError?.(err);
   });
+  socket.on("close", () => console.log("[deepgram] socket closed"));
 
   socket.connect();
   await socket.waitForOpen();
+  console.log("[deepgram] socket open, ready for audio");
 
   return {
     sendAudio(payload) {
