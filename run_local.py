@@ -12,7 +12,9 @@ import uvicorn
 
 from src.api.main import create_app
 from src.call_monitor import run_monitor
+from src.config import Config
 from src.redis_store import CallStore
+from src.sidecar_client import SidecarClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,12 +27,19 @@ async def main():
     store = CallStore(fakeredis.FakeRedis(decode_responses=True))
     app = create_app(store)
 
+    sidecar = None
+    if Config.SOFTPHONE_BRIDGE_URL and Config.SOFTPHONE_BRIDGE_API_KEY:
+        sidecar = SidecarClient(Config.SOFTPHONE_BRIDGE_URL, Config.SOFTPHONE_BRIDGE_API_KEY)
+        logger.info("Live transcription enabled via %s", Config.SOFTPHONE_BRIDGE_URL)
+    else:
+        logger.info("Live transcription disabled (no sidecar configured)")
+
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
 
     logger.info("Local server starting on http://localhost:8000")
     logger.info("Monitor listening for RC telephony events")
-    await asyncio.gather(server.serve(), run_monitor(store))
+    await asyncio.gather(server.serve(), run_monitor(store, sidecar=sidecar))
 
 
 if __name__ == "__main__":
