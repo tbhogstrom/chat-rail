@@ -13,11 +13,22 @@ declare module "ringcentral-softphone" {
     codec?: Codec;
     ignoreTlsCertErrors?: boolean;
   };
+  // Minimal CallSession surface used by the supervisor. The real SDK's
+  // CallSession extends EventEmitter and is returned (as OutboundCallSession)
+  // from Softphone.call(); we re-declare only the methods/events we use
+  // because the SDK's own types don't resolve cleanly under NodeNext.
+  export interface CallSession {
+    hangup(): Promise<void>;
+    sendDTMFs(s: string, delay?: number): Promise<void>;
+    on(event: string, listener: (...args: unknown[]) => void): this;
+    once(event: string, listener: (...args: unknown[]) => void): this;
+  }
   export default class Softphone {
     constructor(options: SoftPhoneOptions);
     register(): Promise<void>;
     enableDebugMode(): void;
     revoke(): void;
     on(event: string, listener: (...args: unknown[]) => void): this;
+    call(callee: string): Promise<CallSession>;
   }
 }
