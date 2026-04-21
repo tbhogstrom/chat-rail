@@ -1,4 +1,7 @@
+import asyncio
 import pytest
+from unittest.mock import AsyncMock, MagicMock
+
 from src.redis_store import CallStore
 from src.call_monitor import process_telephony_event
 
@@ -75,3 +78,44 @@ def test_multiple_calls_tracked(store):
 
     active = store.list_active_calls()
     assert len(active) == 2
+
+
+@pytest.mark.asyncio
+async def test_answered_triggers_sidecar_when_monitored(store):
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    event = make_event("s-200", "Answered",
+                       to_info={"extensionId": "119", "extensionNumber": "101",
+                                "name": "Doug Stoker"})
+    process_telephony_event(event, store, sidecar=sidecar, monitored_extensions=["119"])
+    await asyncio.sleep(0)
+    sidecar.start_supervision.assert_awaited_once_with("s-200", "101")
+
+
+@pytest.mark.asyncio
+async def test_answered_skipped_when_not_monitored(store):
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    event = make_event("s-200", "Answered",
+                       to_info={"extensionId": "999", "extensionNumber": "999"})
+    process_telephony_event(event, store, sidecar=sidecar, monitored_extensions=["119"])
+    await asyncio.sleep(0)
+    sidecar.start_supervision.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_stops_sidecar(store):
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    sidecar.stop_supervision = AsyncMock()
+    process_telephony_event(make_event("s-200", "Answered",
+                                       to_info={"extensionId": "119",
+                                                "extensionNumber": "101"}),
+                            store, sidecar=sidecar, monitored_extensions=["119"])
+    await asyncio.sleep(0)
+    process_telephony_event(make_event("s-200", "Disconnected",
+                                       to_info={"extensionId": "119",
+                                                "extensionNumber": "101"}),
+                            store, sidecar=sidecar, monitored_extensions=["119"])
+    await asyncio.sleep(0)
+    sidecar.stop_supervision.assert_awaited_once_with("s-200")

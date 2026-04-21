@@ -14,7 +14,8 @@ ACTIVE_STATUSES = {"Proceeding", "Answered", "Hold"}
 END_STATUSES = {"Disconnected", "Gone", "VoiceMail"}
 
 
-def process_telephony_event(event: dict, store: CallStore) -> None:
+def process_telephony_event(event: dict, store: CallStore,
+                            sidecar=None, monitored_extensions=None) -> None:
     """Process a single RC telephony session notification and update store."""
     body = event.get("body", {})
     session_id = body.get("telephonySessionId")
@@ -31,6 +32,8 @@ def process_telephony_event(event: dict, store: CallStore) -> None:
     direction = party.get("direction", "Unknown")
     from_info = party.get("from", {})
     to_info = party.get("to", {})
+    ext_id = to_info.get("extensionId") or from_info.get("extensionId")
+    ext_number = to_info.get("extensionNumber") or from_info.get("extensionNumber")
 
     call_data = {
         "sessionId": session_id,
@@ -43,12 +46,23 @@ def process_telephony_event(event: dict, store: CallStore) -> None:
     if status in END_STATUSES:
         logger.info("Call ended: %s (status=%s)", session_id, status)
         store.complete_call(session_id)
+        if sidecar and ext_id and _is_monitored(ext_id, monitored_extensions):
+            asyncio.create_task(sidecar.stop_supervision(session_id))
     else:
         logger.info("Call event: %s (status=%s)", session_id, status)
         store.store_call(session_id, call_data)
+        if (sidecar and status == "Answered" and ext_id and ext_number
+                and _is_monitored(ext_id, monitored_extensions)):
+            asyncio.create_task(sidecar.start_supervision(session_id, ext_number))
 
 
-async def run_monitor(store: CallStore) -> None:
+def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
+    if not monitored:
+        return False  # Phase 2: empty = disabled (conservative)
+    return ext_id in monitored
+
+
+async def run_monitor(store: CallStore, sidecar=None) -> None:
     """Connect to RC WebSocket and process telephony events, reconnecting on disconnect."""
     event_filters = ["/restapi/v1.0/account/~/telephony/sessions"]
 
@@ -65,7 +79,7 @@ async def run_monitor(store: CallStore) -> None:
             ext = platform.get("/restapi/v1.0/account/~/extension/~").json_dict()
             logger.info("Monitoring as: %s (ext %s)", ext["name"], ext["extensionNumber"])
 
-            await _run_ws_session(sdk, event_filters, store)
+            await _run_ws_session(sdk, event_filters, store, sidecar=sidecar)
             backoff = 1  # reset on clean exit
         except Exception as e:
             logger.warning("WebSocket session ended: %s. Reconnecting in %ds...", e, backoff)
@@ -73,7 +87,7 @@ async def run_monitor(store: CallStore) -> None:
             backoff = min(backoff * 2, 60)
 
 
-async def _run_ws_session(sdk, event_filters, store: CallStore) -> None:
+async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None) -> None:
     """Run a single WebSocket session until it disconnects or errors."""
     ws_client = sdk.create_web_socket_client()
     token_data = ws_client.get_web_socket_token()
@@ -109,7 +123,8 @@ async def _run_ws_session(sdk, event_filters, store: CallStore) -> None:
             return
 
         logger.info("RC notification: %s", json.dumps(event, default=str)[:300])
-        process_telephony_event(event, store)
+        process_telephony_event(event, store, sidecar=sidecar,
+                                monitored_extensions=Config.MONITORED_EXTENSIONS)
 
     async def on_connected(client):
         logger.info("WebSocket connected, creating subscription...")
