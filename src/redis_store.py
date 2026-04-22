@@ -59,3 +59,19 @@ class CallStore:
     def get_transcript(self, session_id: str) -> str | None:
         """Get transcript text for a call."""
         return self.redis.get(f"call:{session_id}:transcript")
+
+    def list_active_sessions(self) -> list[str]:
+        """Return all session IDs currently in the active set."""
+        return list(self.redis.smembers("calls:active"))
+
+    def set_extracted(self, session_id: str, data: dict, ttl: int = 3600) -> None:
+        """Persist extractor output for a session as JSON."""
+        self.redis.set(f"call:{session_id}:extracted", json.dumps(data))
+        self.redis.expire(f"call:{session_id}:extracted", ttl)
+
+    def get_extracted(self, session_id: str) -> dict | None:
+        """Return the stored extractor output, or None if absent."""
+        raw = self.redis.get(f"call:{session_id}:extracted")
+        if raw is None:
+            return None
+        return json.loads(raw)

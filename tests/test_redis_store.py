@@ -102,3 +102,23 @@ def test_store_and_get_transcript(store):
 
 def test_get_transcript_returns_none_for_missing(store):
     assert store.get_transcript("nonexistent") is None
+
+
+def test_list_active_sessions(store):
+    store.store_call("s-1", {"sessionId": "s-1", "status": "Answered",
+                              "from": {}, "to": {"extensionId": "119"}})
+    store.store_call("s-2", {"sessionId": "s-2", "status": "Answered",
+                              "from": {}, "to": {"extensionId": "120"}})
+    active = store.list_active_sessions()
+    assert set(active) == {"s-1", "s-2"}
+
+
+def test_set_and_get_extracted(store):
+    data = {"firstname": "Sebastian", "lastname": None, "email": None}
+    store.set_extracted("s-1", data)
+    got = store.get_extracted("s-1")
+    assert got == data
+
+
+def test_get_extracted_missing_returns_none(store):
+    assert store.get_extracted("s-does-not-exist") is None
