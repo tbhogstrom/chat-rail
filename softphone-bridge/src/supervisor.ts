@@ -1,11 +1,16 @@
 import type Softphone from "ringcentral-softphone";
+import type { CallSession } from "ringcentral-softphone";
 import { openDeepgram, type DeepgramSession } from "./deepgram.js";
-import { appendTranscript, clearTranscript } from "./redis.js";
+import { appendTranscript, clearTranscript, getCallState } from "./redis.js";
 
 export interface Supervisor {
   sessionId: string;
   stop(): Promise<void>;
 }
+
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 3000;
+const TERMINAL_STATUSES = new Set(["Disconnected", "Gone", "VoiceMail"]);
 
 export async function superviseCall(
   softphone: Softphone,
@@ -13,69 +18,128 @@ export async function superviseCall(
   agentExtNumber: string,
   onStopped?: () => void,
 ): Promise<Supervisor> {
-  console.log(`[sup:${sessionId}] starting — agent ext ${agentExtNumber}`);
   const startedAt = Date.now();
-
   await clearTranscript(sessionId);
 
-  const dg: DeepgramSession = await openDeepgram({
-    onFinal: (text) => {
-      console.log(`[sup:${sessionId}] final: ${text}`);
-      void appendTranscript(sessionId, text);
-    },
-    onError: (err) => console.error(`[sup:${sessionId}] deepgram error`, err),
-  });
+  type State = "running" | "retrying" | "stopped";
+  let state: State = "running";
+  let attempt = 0;
+  let current: { dg: DeepgramSession; call: CallSession } | null = null;
 
-  const callSession = await softphone.call("*80");
-
-  let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    try {
-      await callSession.hangup();
-    } catch (e) {
-      /* may already be gone */
-    }
-    await dg.close();
-    const durationMs = Date.now() - startedAt;
-    console.log(`[sup:${sessionId}] stopped after ${durationMs}ms`);
+  const fireStopped = () => {
+    if (state === "stopped") return;
+    state = "stopped";
+    const ms = Date.now() - startedAt;
+    console.log(`[sup:${sessionId}] stopped after ${ms}ms across ${attempt} attempt(s)`);
     onStopped?.();
   };
 
-  callSession.once("answered", async () => {
-    // RC's *80 IVR greets for a few seconds before it's ready to receive
-    // DTMF. Sending digits immediately gets them dropped during the greeting.
-    // Tyler Liu's rc-softphone-monitor-demo uses a 5s pre-DTMF wait.
-    await new Promise((r) => setTimeout(r, 5000));
-    await callSession.sendDTMFs(`${agentExtNumber}#`, 500);
-    console.log(`[sup:${sessionId}] monitoring active`);
-  });
+  const startAttempt = async (): Promise<void> => {
+    attempt++;
+    state = "running";
+    console.log(`[sup:${sessionId}] attempt ${attempt}/${MAX_ATTEMPTS}`);
 
-  let audioPackets = 0;
-  callSession.on("audioPacket", (...args: unknown[]) => {
-    const rtp = args[0] as { payload: Buffer };
-    audioPackets++;
-    if (audioPackets === 1 || audioPackets % 250 === 0) {
+    const dg = await openDeepgram({
+      onFinal: (text) => {
+        console.log(`[sup:${sessionId}] final: ${text}`);
+        void appendTranscript(sessionId, text);
+      },
+      onError: (err) => console.error(`[sup:${sessionId}] deepgram error`, err),
+    });
+
+    const call = await softphone.call("*80");
+    current = { dg, call };
+
+    call.once("answered", async () => {
+      await new Promise((r) => setTimeout(r, 5000));
+      await call.sendDTMFs(`${agentExtNumber}#`, 500);
+      console.log(`[sup:${sessionId}] monitoring active (attempt ${attempt})`);
+    });
+
+    let audioPackets = 0;
+    call.on("audioPacket", (...args: unknown[]) => {
+      const rtp = args[0] as { payload: Buffer };
+      audioPackets++;
+      if (audioPackets === 1 || audioPackets % 250 === 0) {
+        console.log(
+          `[sup:${sessionId}] audio packets: ${audioPackets}, last size: ${rtp.payload.length}B`,
+        );
+      }
+      dg.sendAudio(rtp.payload);
+    });
+
+    call.once("disposed", async (...args: unknown[]) => {
       console.log(
-        `[sup:${sessionId}] audio packets: ${audioPackets}, last size: ${rtp.payload.length}B`,
+        `[sup:${sessionId}] *80 disposed (attempt ${attempt}). args:`,
+        JSON.stringify(args).slice(0, 200),
       );
+      await dg.close();
+      current = null;
+
+      if (state === "stopped") return; // external stop already in progress
+
+      if (attempt >= MAX_ATTEMPTS) {
+        console.log(`[sup:${sessionId}] max attempts (${MAX_ATTEMPTS}) reached`);
+        fireStopped();
+        return;
+      }
+
+      const callState = await getCallState(sessionId);
+      const sourceActive =
+        callState != null && !TERMINAL_STATUSES.has(callState.status ?? "");
+      if (!sourceActive) {
+        console.log(
+          `[sup:${sessionId}] source call ended (status=${callState?.status ?? "unknown"}); not retrying`,
+        );
+        fireStopped();
+        return;
+      }
+
+      console.log(
+        `[sup:${sessionId}] source still active (status=${callState.status}); retrying in ${RETRY_DELAY_MS}ms`,
+      );
+      state = "retrying";
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      if ((state as State) !== "retrying") return; // external stop during wait
+      try {
+        await startAttempt();
+      } catch (err) {
+        console.error(`[sup:${sessionId}] retry failed`, err);
+        fireStopped();
+      }
+    });
+
+    call.once("busy", () => {
+      console.warn(`[sup:${sessionId}] busy — supervision refused`);
+      void (async () => {
+        await dg.close();
+        current = null;
+        fireStopped();
+      })();
+    });
+  };
+
+  await startAttempt();
+
+  const externalStop = async () => {
+    if (state === "stopped") return;
+    const prev = state;
+    state = "stopped";
+    if (current) {
+      try {
+        await current.call.hangup();
+      } catch (_e) {
+        /* may be gone */
+      }
+      await current.dg.close();
+      current = null;
     }
-    dg.sendAudio(rtp.payload);
-  });
-
-  callSession.once("disposed", (...args: unknown[]) => {
+    const ms = Date.now() - startedAt;
     console.log(
-      `[sup:${sessionId}] *80 call disposed by RC. args:`,
-      JSON.stringify(args).slice(0, 300),
+      `[sup:${sessionId}] external stop (was ${prev}, after ${ms}ms, ${attempt} attempt(s))`,
     );
-    void stop();
-  });
+    onStopped?.();
+  };
 
-  callSession.once("busy", () => {
-    console.warn(`[sup:${sessionId}] busy — supervision refused`);
-    void stop();
-  });
-
-  return { sessionId, stop };
+  return { sessionId, stop: externalStop };
 }

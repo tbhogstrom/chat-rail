@@ -15,3 +15,21 @@ export async function appendTranscript(sessionId: string, chunk: string): Promis
 export async function clearTranscript(sessionId: string): Promise<void> {
   await redis.del(`call:${sessionId}:transcript`);
 }
+
+export interface CallState {
+  status?: string;
+  direction?: string;
+}
+
+export async function getCallState(sessionId: string): Promise<CallState | null> {
+  const raw = await redis.get<string | CallState>(`call:${sessionId}:state`);
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as CallState;
+    } catch {
+      return null;
+    }
+  }
+  return raw;
+}
