@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SFW Call Bridge — Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1320;
+      --panel: #1a2036;
+      --border: #2a3252;
+      --text: #e6ecff;
+      --muted: #8c97c2;
+      --red: #f87171;
+      --green: #4ade80;
+      --accent: #7c9cff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+           background: var(--bg); color: var(--text); line-height: 1.4; }
+    header { padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+             display: flex; justify-content: space-between; align-items: center; }
+    h1 { margin: 0; font-size: 18px; font-weight: 600; }
+    #session-info { font-size: 12px; color: var(--muted); }
+    main { display: grid; grid-template-columns: 1fr 420px; gap: 16px;
+           padding: 16px; height: calc(100vh - 52px); }
+    section { background: var(--panel); border: 1px solid var(--border);
+              border-radius: 8px; padding: 16px; overflow: auto; }
+    section h2 { margin: 0 0 12px; font-size: 14px; color: var(--muted);
+                 text-transform: uppercase; letter-spacing: 0.08em; }
+    #transcript-body { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+    .field { display: grid; grid-template-columns: 14px 110px 1fr;
+             gap: 10px; align-items: center; margin-bottom: 8px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+    .dot.green { background: var(--green); }
+    .field label { font-size: 13px; color: var(--muted); }
+    .field input { background: var(--bg); border: 1px solid var(--border);
+                   color: var(--text); padding: 6px 8px; border-radius: 4px;
+                   font-size: 13px; font-family: inherit; }
+    .actions { margin-top: 20px; display: flex; flex-direction: column; gap: 8px; }
+    button { background: var(--accent); color: #0a0f1f; border: none;
+             padding: 10px 12px; border-radius: 6px; font-size: 13px;
+             font-weight: 600; cursor: pointer; text-align: left; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.secondary { background: var(--bg); color: var(--text);
+                       border: 1px solid var(--border); }
+    hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+    textarea { background: var(--bg); border: 1px solid var(--border);
+               color: var(--text); padding: 8px; border-radius: 4px;
+               font-size: 13px; font-family: inherit; resize: vertical; min-height: 80px; }
+    #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+             background: var(--panel); border: 1px solid var(--border);
+             padding: 10px 16px; border-radius: 6px; font-size: 13px;
+             opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 80%; }
+    #toast.show { opacity: 1; pointer-events: auto; }
+    #toast.error { border-color: var(--red); }
+    .ended { color: var(--muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SFW Call Bridge — Dashboard</h1>
+    <div id="session-info">Waiting for call…</div>
+  </header>
+  <main>
+    <section id="transcript">
+      <h2>Live Transcript</h2>
+      <div id="transcript-body">Waiting for transcript…</div>
+    </section>
+    <section id="fields">
+      <h2>Caller Info</h2>
+      <div class="field" data-key="firstname">
+        <span class="dot"></span><label>First name</label><input type="text" />
+      </div>
+      <div class="field" data-key="lastname">
+        <span class="dot"></span><label>Last name</label><input type="text" />
+      </div>
+      <div class="field" data-key="email">
+        <span class="dot"></span><label>Email</label><input type="email" />
+      </div>
+      <div class="field" data-key="phone">
+        <span class="dot"></span><label>Phone</label><input type="tel" />
+      </div>
+      <div class="field" data-key="company">
+        <span class="dot"></span><label>Company</label><input type="text" />
+      </div>
+
+      <h2 style="margin-top:16px">Jobsite</h2>
+      <div class="field" data-key="address">
+        <span class="dot"></span><label>Street</label><input type="text" />
+      </div>
+      <div class="field" data-key="city">
+        <span class="dot"></span><label>City</label><input type="text" />
+      </div>
+      <div class="field" data-key="state">
+        <span class="dot"></span><label>State</label><input type="text" />
+      </div>
+      <div class="field" data-key="zip">
+        <span class="dot"></span><label>ZIP</label><input type="text" />
+      </div>
+
+      <div class="actions">
+        <button id="lookup">🔍 Lookup HubSpot Contact</button>
+        <button id="upsert">✅ Create / Update Contact</button>
+        <hr />
+        <button id="scope">✨ Generate Scope Summary</button>
+        <textarea id="scope-text" placeholder="Scope summary will appear here…"></textarea>
+        <button id="deal" disabled>💼 Create Deal</button>
+        <hr />
+        <button id="copy" class="secondary">📋 Copy Transcript</button>
+      </div>
+    </section>
+  </main>
+  <div id="toast"></div>
+
+  <script>
+    // ---- setup ----
+    const params = new URLSearchParams(location.search);
+    const repId = params.get("rep");
+    if (!repId) {
+      document.getElementById("transcript-body").textContent =
+        "Missing ?rep=<extension_id> in the URL.";
+      throw new Error("missing rep");
+    }
+    let apiKey = localStorage.getItem("sfw-bridge-key");
+    if (!apiKey) {
+      apiKey = prompt("Enter your SFW Bridge API key (x-api-key):") || "";
+      if (apiKey) localStorage.setItem("sfw-bridge-key", apiKey);
+    }
+
+    let currentSid = null;
+    let lastContactId = null;
+    const touchedFields = new Set();
+
+    function authHeaders(extra = {}) {
+      return { "x-api-key": apiKey, "content-type": "application/json", ...extra };
+    }
+
+    function toast(msg, isError = false) {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.className = "show" + (isError ? " error" : "");
+      setTimeout(() => { el.className = ""; }, 4000);
+    }
+
+    function getFieldInput(key) {
+      return document.querySelector(`.field[data-key="${key}"] input`);
+    }
+    function getFieldDot(key) {
+      return document.querySelector(`.field[data-key="${key}"] .dot`);
+    }
+
+    // ---- inputs track "touched" so polling doesn't overwrite ----
+    document.querySelectorAll(".field input").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const key = inp.parentElement.dataset.key;
+        touchedFields.add(key);
+      });
+    });
+
+    // ---- polling ----
+    async function pollCall() {
+      try {
+        const r = await fetch(`/api/calls/latest?rep=${encodeURIComponent(repId)}`, {
+          headers: authHeaders(),
+        });
+        if (r.status === 404) {
+          document.getElementById("session-info").innerHTML =
+            '<span class="ended">No active call for this rep</span>';
+          return;
+        }
+        if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+        const data = await r.json();
+        currentSid = data.call.sessionId;
+        const transcript = data.transcript || "Waiting for transcript…";
+        document.getElementById("transcript-body").textContent = transcript;
+        const body = document.getElementById("transcript-body");
+        body.scrollTop = body.scrollHeight;
+        document.getElementById("session-info").textContent =
+          `${data.call.direction || ""} • ${data.call.status || ""} • ${currentSid}`;
+      } catch (e) {
+        document.getElementById("session-info").textContent = `Poll error: ${e.message}`;
+      }
+    }
+
+    async function pollExtracted() {
+      if (!currentSid) return;
+      try {
+        const r = await fetch(`/api/calls/${encodeURIComponent(currentSid)}/extracted`, {
+          headers: authHeaders(),
+        });
+        if (r.status === 404) return;  // no extraction yet
+        if (!r.ok) return;
+        const extracted = await r.json();
+        for (const [key, value] of Object.entries(extracted)) {
+          const input = getFieldInput(key);
+          const dot = getFieldDot(key);
+          if (!input || !dot) continue;
+          if (value) dot.classList.add("green");
+          else dot.classList.remove("green");
+          if (!touchedFields.has(key) && value != null) {
+            input.value = value;
+          }
+        }
+      } catch (_) { /* silent — just skip this tick */ }
+    }
+
+    setInterval(pollCall, 2000);
+    setInterval(pollExtracted, 3000);
+    pollCall();
+
+    // ---- button actions ----
+    function readFields() {
+      const out = {};
+      document.querySelectorAll(".field").forEach(f => {
+        const key = f.dataset.key;
+        const v = f.querySelector("input").value.trim();
+        if (v) out[key] = v;
+      });
+      return out;
+    }
+
+    document.getElementById("lookup").addEventListener("click", async () => {
+      const fields = readFields();
+      const r = await fetch("/api/hubspot/contacts/lookup", {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify({ email: fields.email, phone: fields.phone }),
+      });
+      if (r.status === 404) return toast("No matching contact in HubSpot", false);
+      if (!r.ok) return toast(`Lookup error: ${await r.text()}`, true);
+      const data = await r.json();
+      lastContactId = data.id;
+      toast(`Match: ${data.properties.firstname || ""} ${data.properties.lastname || ""} (id ${data.id})`);
+    });
+
+    document.getElementById("upsert").addEventListener("click", async () => {
+      const r = await fetch("/api/hubspot/contacts", {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify(readFields()),
+      });
+      if (!r.ok) return toast(`Upsert error: ${await r.text()}`, true);
+      const data = await r.json();
+      lastContactId = data.contactId;
+      document.getElementById("deal").disabled = false;
+      toast(`Contact ready: id ${data.contactId}`);
+    });
+
+    document.getElementById("scope").addEventListener("click", async () => {
+      if (!currentSid) return toast("No active session", true);
+      const btn = document.getElementById("scope");
+      btn.disabled = true; btn.textContent = "Generating…";
+      try {
+        const r = await fetch(`/api/calls/${encodeURIComponent(currentSid)}/scope-summary`, {
+          method: "POST", headers: authHeaders(),
+        });
+        if (!r.ok) return toast(`Scope error: ${await r.text()}`, true);
+        const data = await r.json();
+        document.getElementById("scope-text").value = data.summary;
+        toast("Scope summary generated");
+      } finally {
+        btn.disabled = false; btn.textContent = "✨ Generate Scope Summary";
+      }
+    });
+
+    document.getElementById("deal").addEventListener("click", async () => {
+      if (!lastContactId) return toast("Create contact first", true);
+      const fields = readFields();
+      const dealname = `${fields.firstname || ""} ${fields.lastname || ""}`.trim()
+                       + (fields.address ? " — " + fields.address : "");
+      const description = document.getElementById("scope-text").value.trim();
+      if (!description) return toast("Generate or type a scope first", true);
+      const r = await fetch("/api/hubspot/deals", {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify({
+          contactId: lastContactId, dealname: dealname || "New lead",
+          description,
+        }),
+      });
+      if (!r.ok) return toast(`Deal error: ${await r.text()}`, true);
+      const data = await r.json();
+      toast(`Deal created: id ${data.dealId}`);
+    });
+
+    document.getElementById("copy").addEventListener("click", async () => {
+      const txt = document.getElementById("transcript-body").textContent;
+      try {
+        await navigator.clipboard.writeText(txt);
+        toast("Transcript copied to clipboard");
+      } catch (e) {
+        toast(`Copy failed: ${e.message}`, true);
+      }
+    });
+  </script>
+</body>
+</html>
