@@ -24,7 +24,7 @@ class ScopeSummarizerError(Exception):
 
 async def summarize_scope(transcript: str, timeout: float = 30.0) -> str:
     """Call `claude -p <prompt> --output-format=json` and return the result text."""
-    prompt = SCOPE_PROMPT.format(transcript=transcript)
+    prompt = SCOPE_PROMPT.replace("{transcript}", transcript)
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt, "--output-format=json",
         stdout=asyncio.subprocess.PIPE,
@@ -37,6 +37,7 @@ async def summarize_scope(transcript: str, timeout: float = 30.0) -> str:
             proc.kill()
         except ProcessLookupError:
             pass
+        await proc.wait()
         raise ScopeSummarizerError(f"claude CLI timed out after {timeout}s") from e
 
     if proc.returncode != 0:

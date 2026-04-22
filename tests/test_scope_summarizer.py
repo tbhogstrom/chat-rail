@@ -42,3 +42,17 @@ async def test_summarize_timeout_raises():
                AsyncMock(return_value=mock_proc)):
         with pytest.raises(ScopeSummarizerError, match="timed out"):
             await summarize_scope("transcript", timeout=0.05)
+
+
+@pytest.mark.asyncio
+async def test_summarize_handles_braces_in_transcript():
+    """Transcripts may legitimately contain braces; must not crash format parser."""
+    fake_stdout = json.dumps({"result": "fine"}).encode()
+    mock_proc = AsyncMock()
+    mock_proc.communicate.return_value = (fake_stdout, b"")
+    mock_proc.returncode = 0
+    tricky = "customer quoted price at {TBD}, timeline {early Q3}"
+    with patch("src.scope_summarizer.asyncio.create_subprocess_exec",
+               AsyncMock(return_value=mock_proc)):
+        result = await summarize_scope(tricky)
+    assert result == "fine"
