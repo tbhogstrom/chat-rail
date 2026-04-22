@@ -57,6 +57,14 @@ def process_telephony_event(event: dict, store: CallStore,
     # Supervision trigger — scan all parties for a monitored rep.
     if not (sidecar and monitored_extensions):
         return
+    scanned = []
+    for p in parties:
+        p_status = p.get("status", {}).get("code", "")
+        p_ext_id = (p.get("to", {}).get("extensionId")
+                    or p.get("from", {}).get("extensionId"))
+        scanned.append((p_ext_id, p_status))
+    logger.info("Supervision scan %s: parties=%s monitored=%s",
+                session_id, scanned, monitored_extensions)
     for p in parties:
         p_status = p.get("status", {}).get("code", "")
         p_ext_id = (p.get("to", {}).get("extensionId")
@@ -64,6 +72,7 @@ def process_telephony_event(event: dict, store: CallStore,
         if not p_ext_id or p_ext_id not in monitored_extensions:
             continue
         if p_status in END_STATUSES:
+            logger.info("Supervision STOP %s (rep %s)", session_id, p_ext_id)
             asyncio.create_task(sidecar.stop_supervision(session_id))
             return
         if p_status == "Answered":
@@ -72,8 +81,13 @@ def process_telephony_event(event: dict, store: CallStore,
             if not p_ext_number and ext_number_map:
                 p_ext_number = ext_number_map.get(p_ext_id)
             if p_ext_number:
+                logger.info("Supervision START %s (rep %s, ext number %s)",
+                            session_id, p_ext_id, p_ext_number)
                 asyncio.create_task(sidecar.start_supervision(session_id, p_ext_number))
                 return
+            else:
+                logger.warning("Supervision match %s but no ext_number for rep %s",
+                               session_id, p_ext_id)
 
 
 def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
@@ -166,7 +180,7 @@ async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None,
         else:
             return
 
-        logger.info("RC notification: %s", json.dumps(event, default=str)[:300])
+        logger.info("RC notification: %s", json.dumps(event, default=str)[:2000])
         process_telephony_event(event, store, sidecar=sidecar,
                                 monitored_extensions=Config.MONITORED_EXTENSIONS,
                                 ext_number_map=ext_number_map)
