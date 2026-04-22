@@ -12,6 +12,29 @@ const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 3000;
 const TERMINAL_STATUSES = new Set(["Disconnected", "Gone", "VoiceMail"]);
 
+// IVR phrases that signal the *80 monitoring attempt failed and RC is about
+// to play ~30s of prompts before hanging up. We abandon the attempt early.
+const IVR_FAIL_PHRASES = [
+  "could not be connected",
+  "did not hear you",
+];
+
+// Prefix of the *80 IVR greeting we don't want in the saved transcript.
+const IVR_GREETING_PHRASES = [
+  "please enter the extension you wish to monitor",
+  "followed by pound",
+];
+
+function isIvrGreeting(text: string): boolean {
+  const lower = text.toLowerCase();
+  return IVR_GREETING_PHRASES.some((p) => lower.includes(p));
+}
+
+function isIvrFailure(text: string): boolean {
+  const lower = text.toLowerCase();
+  return IVR_FAIL_PHRASES.some((p) => lower.includes(p));
+}
+
 export async function superviseCall(
   softphone: Softphone,
   sessionId: string,
@@ -39,8 +62,20 @@ export async function superviseCall(
     state = "running";
     console.log(`[sup:${sessionId}] attempt ${attempt}/${MAX_ATTEMPTS}`);
 
+    let bailOnNextDispose = false;
     const dg = await openDeepgram({
       onFinal: (text) => {
+        if (isIvrGreeting(text)) {
+          // Silent drop — don't pollute the saved transcript with RC's *80 menu.
+          return;
+        }
+        if (isIvrFailure(text)) {
+          console.log(`[sup:${sessionId}] IVR failure detected: "${text}" — bailing attempt ${attempt}`);
+          bailOnNextDispose = true;
+          // Hang up our *80 leg; disposed handler will run retry logic.
+          void call.hangup().catch(() => {});
+          return;
+        }
         console.log(`[sup:${sessionId}] final: ${text}`);
         void appendTranscript(sessionId, text);
       },
@@ -69,8 +104,9 @@ export async function superviseCall(
     });
 
     call.once("disposed", async (...args: unknown[]) => {
+      const reason = bailOnNextDispose ? "IVR-bail" : "RC-disposed";
       console.log(
-        `[sup:${sessionId}] *80 disposed (attempt ${attempt}). args:`,
+        `[sup:${sessionId}] *80 ${reason} (attempt ${attempt}). args:`,
         JSON.stringify(args).slice(0, 200),
       );
       await dg.close();
