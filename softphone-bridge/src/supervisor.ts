@@ -1,7 +1,7 @@
 import type Softphone from "ringcentral-softphone";
 import type { CallSession } from "ringcentral-softphone";
 import { openDeepgram, type DeepgramSession } from "./deepgram.js";
-import { appendTranscript, clearTranscript, getCallState } from "./redis.js";
+import { appendTranscript, getCallState } from "./redis.js";
 
 export interface Supervisor {
   sessionId: string;
@@ -17,6 +17,7 @@ const TERMINAL_STATUSES = new Set(["Disconnected", "Gone", "VoiceMail"]);
 const IVR_FAIL_PHRASES = [
   "could not be connected",
   "did not hear you",
+  "no call on this extension",
 ];
 
 // Prefix of the *80 IVR greeting we don't want in the saved transcript.
@@ -42,7 +43,11 @@ export async function superviseCall(
   onStopped?: () => void,
 ): Promise<Supervisor> {
   const startedAt = Date.now();
-  await clearTranscript(sessionId);
+  // Intentionally do NOT clear the transcript here. If Python re-POSTs
+  // start_supervision after our 3-attempt retry loop gives up (happens on
+  // long calls where RC's *80 duration cap forces multiple fresh supervisor
+  // cycles), we want to APPEND to the accumulated transcript, not wipe it.
+  // For brand-new calls, the Redis key simply doesn't exist yet.
 
   type State = "running" | "retrying" | "stopped";
   let state: State = "running";
