@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from src.redis_store import CallStore
-from src.api.routes import router, set_store
+from src.api.routes import router, hubspot_router, set_store
 
 
 def create_app(store: CallStore | None = None) -> FastAPI:
@@ -10,4 +10,5 @@ def create_app(store: CallStore | None = None) -> FastAPI:
         set_store(store)
 
     app.include_router(router)
+    app.include_router(hubspot_router)
     return app
