@@ -1,0 +1,31 @@
+"""Background task that re-runs extractors against every active session's
+transcript and writes the result to Redis.
+"""
+import asyncio
+import logging
+
+from src.extractor import EXTRACTORS
+from src.redis_store import CallStore
+
+logger = logging.getLogger(__name__)
+
+
+def run_extraction_cycle(store: CallStore) -> None:
+    """One pass over all active sessions. Exposed for unit testing."""
+    for sid in store.list_active_sessions():
+        transcript = store.get_transcript(sid) or ""
+        extracted = {field: fn(transcript) for field, fn in EXTRACTORS.items()}
+        store.set_extracted(sid, extracted)
+
+
+async def run_extraction_worker(store: CallStore, interval: float = 3.0) -> None:
+    """Forever loop: run one cycle every `interval` seconds. Swallows per-cycle
+    errors so a single bad transcript doesn't take down the worker.
+    """
+    logger.info("Extraction worker starting (interval=%ss)", interval)
+    while True:
+        try:
+            run_extraction_cycle(store)
+        except Exception:
+            logger.exception("Extraction worker cycle failed")
+        await asyncio.sleep(interval)
