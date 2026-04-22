@@ -98,6 +98,40 @@ def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
     return ext_id in monitored
 
 
+def _fetch_active_session_events(platform) -> list[dict]:
+    """Return WS-shaped events for every telephony session currently in progress.
+
+    RC's WebSocket only emits state-transition events, so calls that are already
+    live when we connect (or that transition during a WS reconnect gap) are
+    invisible. We hydrate by listing active calls, then fetching each session's
+    full detail — which comes back in the same shape the WS emits — and wrapping
+    it as `{"body": ...}` so callers can reuse `process_telephony_event`.
+    """
+    try:
+        records = platform.get(
+            "/restapi/v1.0/account/~/active-calls",
+            {"perPage": 100, "view": "Detailed"},
+        ).json_dict().get("records", [])
+    except Exception as e:
+        logger.warning("Active-calls snapshot failed: %s", e)
+        return []
+
+    events = []
+    for rec in records:
+        sid = rec.get("telephonySessionId")
+        if not sid:
+            continue
+        try:
+            session = platform.get(
+                f"/restapi/v1.0/account/~/telephony/sessions/{sid}"
+            ).json_dict()
+        except Exception as e:
+            logger.warning("Session fetch failed for %s: %s", sid, e)
+            continue
+        events.append({"body": session})
+    return events
+
+
 def _load_ext_number_map(platform) -> dict[str, str]:
     """Return {extensionId: extensionNumber} for every extension on the account.
 
@@ -136,6 +170,16 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
 
             ext_number_map = _load_ext_number_map(platform)
             logger.info("Loaded ext-number map for %d extensions", len(ext_number_map))
+
+            snapshot = _fetch_active_session_events(platform)
+            if snapshot:
+                logger.info("Hydrating %d in-progress call(s) from snapshot", len(snapshot))
+                for event in snapshot:
+                    process_telephony_event(
+                        event, store, sidecar=sidecar,
+                        monitored_extensions=Config.MONITORED_EXTENSIONS,
+                        ext_number_map=ext_number_map,
+                    )
 
             await _run_ws_session(sdk, event_filters, store, sidecar=sidecar,
                                   ext_number_map=ext_number_map)

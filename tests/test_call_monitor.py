@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.redis_store import CallStore
-from src.call_monitor import process_telephony_event
+from src.call_monitor import process_telephony_event, _fetch_active_session_events
 
 
 @pytest.fixture
@@ -150,6 +150,116 @@ async def test_queue_routed_call_triggers_supervision_on_any_party(store):
                             monitored_extensions=["576959052"])
     await asyncio.sleep(0)
     sidecar.start_supervision.assert_awaited_once_with("s-queue", "119")
+
+
+# ---------------------------------------------------------------- snapshot hydration
+def _mock_platform(routes: dict):
+    """Build a MagicMock platform whose .get(url) returns a mock with .json_dict()
+    keyed by exact-suffix URL match. A route value may also be an Exception
+    instance — in which case .get() raises it.
+    """
+    platform = MagicMock()
+
+    def get(url, params=None):
+        for suffix, payload in routes.items():
+            if url.endswith(suffix):
+                if isinstance(payload, Exception):
+                    raise payload
+                resp = MagicMock()
+                resp.json_dict.return_value = payload
+                return resp
+        raise AssertionError(f"unexpected URL: {url}")
+
+    platform.get.side_effect = get
+    return platform
+
+
+def test_fetch_active_session_events_empty_when_no_active_calls():
+    platform = _mock_platform({"/active-calls": {"records": []}})
+    assert _fetch_active_session_events(platform) == []
+
+
+def test_fetch_active_session_events_returns_ws_shaped_events():
+    platform = _mock_platform({
+        "/active-calls": {"records": [
+            {"telephonySessionId": "s-1"},
+            {"telephonySessionId": "s-2"},
+        ]},
+        "/telephony/sessions/s-1": {
+            "telephonySessionId": "s-1",
+            "parties": [{"status": {"code": "Answered"}, "direction": "Inbound",
+                         "to": {"extensionId": "119"},
+                         "from": {"phoneNumber": "+15551111111"}}],
+        },
+        "/telephony/sessions/s-2": {
+            "telephonySessionId": "s-2",
+            "parties": [{"status": {"code": "Hold"}, "direction": "Outbound",
+                         "to": {"phoneNumber": "+15552222222"},
+                         "from": {"extensionId": "120"}}],
+        },
+    })
+    events = _fetch_active_session_events(platform)
+    assert len(events) == 2
+    assert events[0]["body"]["telephonySessionId"] == "s-1"
+    assert events[0]["body"]["parties"][0]["status"]["code"] == "Answered"
+    assert events[1]["body"]["telephonySessionId"] == "s-2"
+
+
+def test_fetch_active_session_events_skips_records_without_session_id():
+    platform = _mock_platform({"/active-calls": {"records": [{"id": "no-sid"}]}})
+    assert _fetch_active_session_events(platform) == []
+
+
+def test_fetch_active_session_events_continues_when_one_session_fetch_fails():
+    platform = _mock_platform({
+        "/active-calls": {"records": [
+            {"telephonySessionId": "s-bad"},
+            {"telephonySessionId": "s-good"},
+        ]},
+        "/telephony/sessions/s-bad": RuntimeError("boom"),
+        "/telephony/sessions/s-good": {
+            "telephonySessionId": "s-good",
+            "parties": [{"status": {"code": "Answered"},
+                         "to": {"extensionId": "119"}, "from": {}}],
+        },
+    })
+    events = _fetch_active_session_events(platform)
+    assert len(events) == 1
+    assert events[0]["body"]["telephonySessionId"] == "s-good"
+
+
+def test_fetch_active_session_events_returns_empty_when_api_fails():
+    platform = _mock_platform({"/active-calls": RuntimeError("RC down")})
+    assert _fetch_active_session_events(platform) == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_hydration_triggers_supervision_for_monitored_rep(store):
+    """End-to-end: pull snapshot, feed through process_telephony_event,
+    confirm the store is hydrated and supervision fires for a monitored rep."""
+    platform = _mock_platform({
+        "/active-calls": {"records": [{"telephonySessionId": "s-live"}]},
+        "/telephony/sessions/s-live": {
+            "telephonySessionId": "s-live",
+            "parties": [{
+                "status": {"code": "Answered"},
+                "direction": "Inbound",
+                "to": {"extensionId": "576959052", "extensionNumber": "119",
+                       "name": "Doug Stoker"},
+                "from": {"phoneNumber": "+15551234567"},
+            }],
+        },
+    })
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+
+    for ev in _fetch_active_session_events(platform):
+        process_telephony_event(ev, store, sidecar=sidecar,
+                                monitored_extensions=["576959052"])
+    await asyncio.sleep(0)
+
+    assert store.get_call("s-live")["status"] == "Answered"
+    sidecar.start_supervision.assert_awaited_once_with("s-live", "119")
 
 
 @pytest.mark.asyncio
