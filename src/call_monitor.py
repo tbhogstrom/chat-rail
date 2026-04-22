@@ -60,14 +60,16 @@ def process_telephony_event(event: dict, store: CallStore,
     scanned = []
     for p in parties:
         p_status = p.get("status", {}).get("code", "")
-        p_ext_id = (p.get("to", {}).get("extensionId")
+        p_ext_id = (p.get("extensionId")
+                    or p.get("to", {}).get("extensionId")
                     or p.get("from", {}).get("extensionId"))
         scanned.append((p_ext_id, p_status))
     logger.info("Supervision scan %s: parties=%s monitored=%s",
                 session_id, scanned, monitored_extensions)
     for p in parties:
         p_status = p.get("status", {}).get("code", "")
-        p_ext_id = (p.get("to", {}).get("extensionId")
+        p_ext_id = (p.get("extensionId")
+                    or p.get("to", {}).get("extensionId")
                     or p.get("from", {}).get("extensionId"))
         if not p_ext_id or p_ext_id not in monitored_extensions:
             continue
