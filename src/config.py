@@ -37,6 +37,9 @@ class Config:
     SOFTPHONE_BRIDGE_URL: str = os.environ.get("SOFTPHONE_BRIDGE_URL", "")
     SOFTPHONE_BRIDGE_API_KEY: str = os.environ.get("SOFTPHONE_BRIDGE_API_KEY", "")
 
+    # HubSpot (Phase 3)
+    HUBSPOT_PRIVATE_APP_TOKEN: str = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
+
     # Extension IDs to live-transcribe. Empty = disabled.
     MONITORED_EXTENSIONS: list[str] = [
         e.strip() for e in os.environ.get("MONITORED_EXTENSIONS", "").split(",") if e.strip()
