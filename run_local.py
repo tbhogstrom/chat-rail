@@ -17,6 +17,7 @@ from upstash_redis import Redis
 from src.api.main import create_app
 from src.call_monitor import run_monitor
 from src.config import Config
+from src.extraction_worker import run_extraction_worker
 from src.redis_store import CallStore
 from src.sidecar_client import SidecarClient
 
@@ -49,7 +50,11 @@ async def main():
 
     logger.info("Local server starting on http://localhost:8000")
     logger.info("Monitor listening for RC telephony events")
-    await asyncio.gather(server.serve(), run_monitor(store, sidecar=sidecar))
+    await asyncio.gather(
+        server.serve(),
+        run_monitor(store, sidecar=sidecar),
+        run_extraction_worker(store),
+    )
 
 
 if __name__ == "__main__":
