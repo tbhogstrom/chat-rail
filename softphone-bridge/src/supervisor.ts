@@ -11,8 +11,10 @@ export async function superviseCall(
   softphone: Softphone,
   sessionId: string,
   agentExtNumber: string,
+  onStopped?: () => void,
 ): Promise<Supervisor> {
   console.log(`[sup:${sessionId}] starting — agent ext ${agentExtNumber}`);
+  const startedAt = Date.now();
 
   await clearTranscript(sessionId);
 
@@ -36,7 +38,9 @@ export async function superviseCall(
       /* may already be gone */
     }
     await dg.close();
-    console.log(`[sup:${sessionId}] stopped`);
+    const durationMs = Date.now() - startedAt;
+    console.log(`[sup:${sessionId}] stopped after ${durationMs}ms`);
+    onStopped?.();
   };
 
   callSession.once("answered", async () => {
@@ -60,7 +64,11 @@ export async function superviseCall(
     dg.sendAudio(rtp.payload);
   });
 
-  callSession.once("disposed", () => {
+  callSession.once("disposed", (...args: unknown[]) => {
+    console.log(
+      `[sup:${sessionId}] *80 call disposed by RC. args:`,
+      JSON.stringify(args).slice(0, 300),
+    );
     void stop();
   });
 

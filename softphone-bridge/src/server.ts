@@ -24,7 +24,11 @@ export function buildServer(softphone: Softphone) {
         return reply.code(409).send({ error: "already supervising", sessionId });
       }
       try {
-        const sup = await superviseCall(softphone, sessionId, agentExtNumber);
+        const sup = await superviseCall(softphone, sessionId, agentExtNumber, () => {
+          // Internal stop (disposed/busy) — release the map slot so retries
+          // can take a fresh *80 leg instead of 409'ing forever.
+          active.delete(sessionId);
+        });
         active.set(sessionId, sup);
         return reply.code(202).send({ sessionId, status: "supervising" });
       } catch (err) {
