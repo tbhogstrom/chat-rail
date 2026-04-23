@@ -55,7 +55,9 @@ def process_telephony_event(event: dict, store: CallStore,
         logger.info("Call ended: %s (status=%s)", session_id, status)
         store.complete_call(session_id)
     else:
-        logger.info("Call event: %s (status=%s)", session_id, status)
+        # One call fires many mid-state events (Proceeding -> Setup -> Answered
+        # -> Hold -> ...); at INFO they drown out the interesting lines.
+        logger.debug("Call event: %s (status=%s)", session_id, status)
         store.store_call(session_id, call_data)
 
     # Supervision trigger — scan all parties for a monitored rep.
@@ -68,8 +70,8 @@ def process_telephony_event(event: dict, store: CallStore,
                     or p.get("to", {}).get("extensionId")
                     or p.get("from", {}).get("extensionId"))
         scanned.append((p_ext_id, p_status))
-    logger.info("Supervision scan %s: parties=%s monitored=%s",
-                session_id, scanned, monitored_extensions)
+    logger.debug("Supervision scan %s: parties=%s monitored=%s",
+                 session_id, scanned, monitored_extensions)
     for p in parties:
         p_status = p.get("status", {}).get("code", "")
         p_ext_id = (p.get("extensionId")
@@ -279,7 +281,9 @@ async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None,
         else:
             return
 
-        logger.info("RC notification: %s", json.dumps(event, default=str)[:2000])
+        # Full JSON dump is invaluable for debugging but drowns the log during
+        # a real call — ~1 event/second with a 2KB payload each.
+        logger.debug("RC notification: %s", json.dumps(event, default=str)[:2000])
         process_telephony_event(event, store, sidecar=sidecar,
                                 monitored_extensions=Config.MONITORED_EXTENSIONS,
                                 ext_number_map=ext_number_map,

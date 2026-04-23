@@ -25,6 +25,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
+# Hush noisy third parties so Call START/END lines stay visible in the scroll.
+# Flip any of these back to INFO / DEBUG while debugging that subsystem.
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # dashboard polls 2x/sec
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +51,7 @@ async def main():
     else:
         logger.info("Live transcription disabled (no sidecar configured)")
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
     server = uvicorn.Server(config)
 
     logger.info("Local server starting on http://localhost:8000")
