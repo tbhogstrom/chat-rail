@@ -3,7 +3,11 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.redis_store import CallStore
-from src.call_monitor import process_telephony_event, _fetch_active_session_events
+from src.call_monitor import (
+    process_telephony_event,
+    _fetch_active_session_events,
+    _load_ext_display_map,
+)
 
 
 @pytest.fixture
@@ -285,3 +289,64 @@ async def test_ext_number_map_resolves_missing_extensionnumber(store):
                             ext_number_map={"576959052": "119"})
     await asyncio.sleep(0)
     sidecar.start_supervision.assert_awaited_once_with("s-map", "119")
+
+
+# ---------------------------------------------------------------- rep_first_name
+def test_rep_first_name_set_from_party_to_name(store):
+    """Inbound call: party.to.name='Doug Stoker' → rep_first_name='Doug'."""
+    event = make_event("s-rep", "Answered",
+                       to_info={"extensionId": "576959052", "name": "Doug Stoker"})
+    process_telephony_event(event, store, monitored_extensions=["576959052"])
+    call = store.get_call("s-rep")
+    assert call["rep_first_name"] == "Doug"
+
+
+def test_rep_first_name_falls_back_to_display_map(store):
+    """Outbound call where the party carries no name field — resolve from map."""
+    event = {
+        "body": {
+            "telephonySessionId": "s-outbound",
+            "parties": [{
+                "status": {"code": "Answered"},
+                "direction": "Outbound",
+                "from": {"extensionId": "576959052"},
+                "to": {"phoneNumber": "+14036160460"},
+            }],
+        }
+    }
+    process_telephony_event(event, store,
+                            monitored_extensions=["576959052"],
+                            ext_display_map={"576959052": "Doug Stoker"})
+    call = store.get_call("s-outbound")
+    assert call["rep_first_name"] == "Doug"
+
+
+def test_rep_first_name_none_when_no_monitored_match(store):
+    event = make_event("s-other", "Answered",
+                       to_info={"extensionId": "999", "name": "Someone Else"})
+    process_telephony_event(event, store, monitored_extensions=["576959052"])
+    call = store.get_call("s-other")
+    assert call.get("rep_first_name") is None
+
+
+def test_load_ext_display_map_returns_id_to_name():
+    platform = MagicMock()
+    resp = MagicMock()
+    resp.json_dict.return_value = {
+        "records": [
+            {"id": 576959052, "name": "Doug Stoker", "extensionNumber": "119"},
+            {"id": 442845052, "name": "Jacob Hair",  "extensionNumber": "120"},
+            {"id": 1, "extensionNumber": "000"},  # no name — skipped
+        ]
+    }
+    platform.get.return_value = resp
+    assert _load_ext_display_map(platform) == {
+        "576959052": "Doug Stoker",
+        "442845052": "Jacob Hair",
+    }
+
+
+def test_load_ext_display_map_returns_empty_on_api_failure():
+    platform = MagicMock()
+    platform.get.side_effect = RuntimeError("RC down")
+    assert _load_ext_display_map(platform) == {}

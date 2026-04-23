@@ -16,7 +16,8 @@ END_STATUSES = {"Disconnected", "Gone", "VoiceMail"}
 
 def process_telephony_event(event: dict, store: CallStore,
                             sidecar=None, monitored_extensions=None,
-                            ext_number_map=None) -> None:
+                            ext_number_map=None,
+                            ext_display_map=None) -> None:
     """Process a single RC telephony session notification and update store.
 
     Supervision trigger scans ALL parties (not just parties[0]) because
@@ -39,12 +40,15 @@ def process_telephony_event(event: dict, store: CallStore,
     from_info = party.get("from", {})
     to_info = party.get("to", {})
 
+    rep_first_name = _resolve_rep_first_name(parties, monitored_extensions, ext_display_map)
+
     call_data = {
         "sessionId": session_id,
         "status": status,
         "direction": direction,
         "from": from_info,
         "to": to_info,
+        "rep_first_name": rep_first_name,
     }
 
     if status in END_STATUSES:
@@ -151,6 +155,51 @@ def _load_ext_number_map(platform) -> dict[str, str]:
     return out
 
 
+def _load_ext_display_map(platform) -> dict[str, str]:
+    """Return {extensionId: displayName} for every extension on the account.
+
+    Outbound telephony events commonly omit the rep's own name on the `from`
+    party (only extensionId is present), so we resolve to display name via a
+    startup snapshot. Used to tag transcript highlights as rep-vs-caller.
+    """
+    try:
+        resp = platform.get("/restapi/v1.0/account/~/extension", {"perPage": 250}).json_dict()
+    except Exception as e:
+        logger.warning("Failed to load extension list for ext-display map: %s", e)
+        return {}
+    out = {}
+    for e in resp.get("records", []):
+        name = e.get("name")
+        if name:
+            out[str(e["id"])] = name
+    return out
+
+
+def _resolve_rep_first_name(parties, monitored_extensions, ext_display_map):
+    """First word of the monitored rep's display name, or None.
+
+    Scans each party; the first one whose extensionId is in `monitored_extensions`
+    wins. Display name comes from any of: party.name, party.to.name, party.from.name,
+    or the ext_display_map fallback.
+    """
+    if not monitored_extensions:
+        return None
+    for p in parties:
+        p_ext_id = (p.get("extensionId")
+                    or p.get("to", {}).get("extensionId")
+                    or p.get("from", {}).get("extensionId"))
+        if not p_ext_id or p_ext_id not in monitored_extensions:
+            continue
+        name = (p.get("name")
+                or p.get("to", {}).get("name")
+                or p.get("from", {}).get("name"))
+        if not name and ext_display_map:
+            name = ext_display_map.get(p_ext_id)
+        if name:
+            return name.split()[0]
+    return None
+
+
 async def run_monitor(store: CallStore, sidecar=None) -> None:
     """Connect to RC WebSocket and process telephony events, reconnecting on disconnect."""
     event_filters = ["/restapi/v1.0/account/~/telephony/sessions"]
@@ -170,6 +219,8 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
 
             ext_number_map = _load_ext_number_map(platform)
             logger.info("Loaded ext-number map for %d extensions", len(ext_number_map))
+            ext_display_map = _load_ext_display_map(platform)
+            logger.info("Loaded ext-display map for %d extensions", len(ext_display_map))
 
             snapshot = _fetch_active_session_events(platform)
             if snapshot:
@@ -179,10 +230,12 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
                         event, store, sidecar=sidecar,
                         monitored_extensions=Config.MONITORED_EXTENSIONS,
                         ext_number_map=ext_number_map,
+                        ext_display_map=ext_display_map,
                     )
 
             await _run_ws_session(sdk, event_filters, store, sidecar=sidecar,
-                                  ext_number_map=ext_number_map)
+                                  ext_number_map=ext_number_map,
+                                  ext_display_map=ext_display_map)
             backoff = 1  # reset on clean exit
         except Exception as e:
             logger.warning("WebSocket session ended: %s. Reconnecting in %ds...", e, backoff)
@@ -191,7 +244,7 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
 
 
 async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None,
-                          ext_number_map=None) -> None:
+                          ext_number_map=None, ext_display_map=None) -> None:
     """Run a single WebSocket session until it disconnects or errors."""
     ws_client = sdk.create_web_socket_client()
     token_data = ws_client.get_web_socket_token()
@@ -229,7 +282,8 @@ async def _run_ws_session(sdk, event_filters, store: CallStore, sidecar=None,
         logger.info("RC notification: %s", json.dumps(event, default=str)[:2000])
         process_telephony_event(event, store, sidecar=sidecar,
                                 monitored_extensions=Config.MONITORED_EXTENSIONS,
-                                ext_number_map=ext_number_map)
+                                ext_number_map=ext_number_map,
+                                ext_display_map=ext_display_map)
 
     async def on_connected(client):
         logger.info("WebSocket connected, creating subscription...")

@@ -217,3 +217,87 @@ EXTRACTORS: dict[str, Callable[[str], str | None]] = {
     "state": extract_state,
     "zip": extract_zip,
 }
+
+
+# ---------------------------------------------------------------- HIGHLIGHTS
+# Greeting-style name triggers ("Hi, Jim", "Hello Sarah", "Hey, Bob").
+_GREETING_NAME_RE = re.compile(
+    r"""(?ix)
+    \b(?:hi|hello|hey)[,]?\s+([A-Z][a-z]{1,20})\b
+    """,
+)
+
+# Words that look like names to the regex but are actually greetings or fillers.
+# Compared lowercase. Keep this list conservative; real names that collide
+# (e.g., "Sir" as a given name) are rare.
+_NAME_STOPWORDS = {
+    "there", "guys", "everyone", "everybody", "you", "back", "man", "dude",
+    "sir", "madam", "maam", "folks", "yall", "again", "now", "buddy",
+    "honey", "babe", "friend", "sweetie", "boss",
+}
+
+
+def find_highlights(text: str, rep_first_name: str | None = None) -> list[dict]:
+    """Return every span of the transcript worth visually highlighting.
+
+    Output: list of `{"ruleId", "start", "end", "text"}` sorted by start offset.
+    The dashboard wraps each span in a `<mark>` styled by ruleId.
+
+    Name handling: any detected first-name match is tagged `rep-name` when it
+    equals `rep_first_name` (case-insensitive), otherwise `caller-name`. With
+    no rep hint, every name is `caller-name`.
+    """
+    out: list[dict] = []
+
+    def add(rule_id: str, start: int, end: int) -> None:
+        out.append({"ruleId": rule_id, "start": start,
+                    "end": end, "text": text[start:end]})
+
+    def add_name(start: int, end: int) -> None:
+        token = text[start:end]
+        if token.lower() in _NAME_STOPWORDS:
+            return
+        rule = "caller-name"
+        if rep_first_name and token.lower() == rep_first_name.lower():
+            rule = "rep-name"
+        add(rule, start, end)
+
+    # Names — introduced via trigger phrase or greeting.
+    for m in _FIRSTNAME_RE.finditer(text):
+        add_name(*m.span(1))
+    for m in _GREETING_NAME_RE.finditer(text):
+        add_name(*m.span(1))
+
+    # Email.
+    for m in _EMAIL_RE.finditer(text):
+        add("email", *m.span(0))
+
+    # Phone — plain-digit pass. Spoken-number phones are skipped for highlighting
+    # since the normalized string has different offsets than the original text.
+    for m in _PHONE_NUM_RE.finditer(text):
+        add("phone", *m.span(0))
+
+    # Company, address — regexes already capture the useful span in group 1.
+    for m in _COMPANY_RE.finditer(text):
+        add("company", *m.span(1))
+    for m in _ADDRESS_RE.finditer(text):
+        add("address", *m.span(1))
+
+    # City — two trigger patterns.
+    for m in _CITY_BEFORE_STATE_RE.finditer(text):
+        add("city", *m.span(1))
+    for m in _CITY_IN_CITY_RE.finditer(text):
+        add("city", *m.span(1))
+
+    # State — abbreviation in address context, or full name anywhere.
+    for m in _STATE_ABBREV_IN_CONTEXT_RE.finditer(text):
+        add("state", *m.span(1))
+    for m in _STATE_FULLNAME_RE.finditer(text):
+        add("state", *m.span(1))
+
+    # ZIP.
+    for m in _ZIP_RE.finditer(text):
+        add("zip", *m.span(1))
+
+    out.sort(key=lambda h: h["start"])
+    return out

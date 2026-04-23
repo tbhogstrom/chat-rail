@@ -9,6 +9,7 @@ from src.extractor import (
     extract_state,
     extract_zip,
     EXTRACTORS,
+    find_highlights,
 )
 
 
@@ -152,3 +153,69 @@ def test_extractors_bundle_has_all_nine_keys():
         "firstname", "lastname", "email", "phone", "company",
         "address", "city", "state", "zip",
     }
+
+
+# --- find_highlights ---
+def test_highlights_empty_for_empty_text():
+    assert find_highlights("") == []
+
+
+def test_highlights_returns_spans_with_ruleid():
+    text = "Reach me at john@example.com at 503-444-1123."
+    hl = find_highlights(text)
+    emails = [h for h in hl if h["ruleId"] == "email"]
+    phones = [h for h in hl if h["ruleId"] == "phone"]
+    assert len(emails) == 1
+    assert emails[0]["text"] == "john@example.com"
+    assert text[emails[0]["start"]:emails[0]["end"]] == "john@example.com"
+    assert len(phones) == 1
+    assert phones[0]["text"] == "503-444-1123"
+
+
+def test_highlights_name_split_by_rep():
+    """Given rep_first_name=Doug, 'Jim' is caller-name, 'Doug' is rep-name."""
+    text = "Hi, Jim. This is Doug with SFW. Call back at (503) 885-0237."
+    hl = find_highlights(text, rep_first_name="Doug")
+    names = [(h["ruleId"], h["text"]) for h in hl
+             if h["ruleId"] in ("caller-name", "rep-name")]
+    assert ("caller-name", "Jim") in names
+    assert ("rep-name", "Doug") in names
+
+
+def test_highlights_name_without_rep_defaults_to_caller():
+    """With no rep_first_name, every detected name is tagged caller-name."""
+    text = "Hi, Jim. This is Doug."
+    hl = find_highlights(text)
+    names = {h["text"] for h in hl if h["ruleId"] == "caller-name"}
+    assert names == {"Jim", "Doug"}
+
+
+def test_highlights_ignores_stopword_names():
+    """'Hi, there' / 'Hey, guys' should not be tagged as names."""
+    hl = find_highlights("Hi, there friend. Hey, guys what's up?")
+    names = [h for h in hl if h["ruleId"] in ("caller-name", "rep-name")]
+    assert names == []
+
+
+def test_highlights_sorted_by_start():
+    text = "call 503-444-1123 or email bar@foo.com or hi Jim."
+    hl = find_highlights(text)
+    starts = [h["start"] for h in hl]
+    assert starts == sorted(starts)
+
+
+def test_highlights_all_rule_ids_are_known():
+    """Smoke check on the rule vocabulary the client has to support."""
+    text = "Hi, Jim. This is Doug with CORE Electric LLC. Reach me at " \
+           "jim@example.com or 503-555-1212. Address is 1516 NE Marie Drive " \
+           "in Portland, OR 97230."
+    hl = find_highlights(text, rep_first_name="Doug")
+    rule_ids = {h["ruleId"] for h in hl}
+    allowed = {"caller-name", "rep-name", "email", "phone", "company",
+               "address", "city", "state", "zip"}
+    assert rule_ids <= allowed
+    # Should find at least some of each major category.
+    assert "email" in rule_ids
+    assert "phone" in rule_ids
+    assert "caller-name" in rule_ids
+    assert "rep-name" in rule_ids
