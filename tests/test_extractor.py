@@ -197,6 +197,25 @@ def test_highlights_ignores_stopword_names():
     assert names == []
 
 
+def test_highlights_rejects_lowercase_filler_after_im():
+    """'I'm used to...' must NOT capture 'used' — Deepgram capitalizes real
+    names but leaves common words lowercase, so the capture group requires
+    title-case even when the trigger phrase is case-insensitive."""
+    text = ("I just I'm used to people coming out, looking at it. "
+            "Probably just trying to. You gonna come by? "
+            "The I'll check back.")
+    hl = find_highlights(text)
+    names = [h["text"] for h in hl if h["ruleId"] in ("caller-name", "rep-name")]
+    assert names == [], f"unexpected name matches: {names}"
+
+
+def test_firstname_requires_titlecase_after_trigger():
+    """Same invariant at the extract_firstname level."""
+    assert extract_firstname("I just I'm used to doing that.") is None
+    assert extract_firstname("my name is jim (all lower)") is None  # Deepgram would capitalize
+    assert extract_firstname("my name is Jim") == "Jim"
+
+
 def test_highlights_sorted_by_start():
     text = "call 503-444-1123 or email bar@foo.com or hi Jim."
     hl = find_highlights(text)

@@ -77,21 +77,26 @@ def extract_phone(text: str) -> str | None:
 
 
 # ---------------------------------------------------------------- NAMES
+# Name-trigger regexes: the trigger PHRASE is case-insensitive but the captured
+# name must be genuinely title-case. Deepgram reliably capitalizes recognized
+# names ("I'm Jim") while leaving common words lowercase ("I'm used to..."),
+# so requiring the leading capital filters ~95% of false positives like
+# "I'm used" → "used" without losing real names.
 _FIRSTNAME_RE = re.compile(
     r"""(?ix)
     \b(?:my\s+name\s+is|this\s+is|i['’]m|i\s+am|speaking\s+with|name['’]s)
-    \s+([A-Z][a-z]{1,20})
+    \s+(?-i:([A-Z][a-z]{1,20}))
     """,
 )
 _LASTNAME_AFTER_FIRSTNAME_RE = re.compile(
     r"""(?ix)
     \b(?:my\s+name\s+is|this\s+is|i['’]m|i\s+am)
-    \s+[A-Z][a-z]{1,20}\s+([A-Z][a-z]{1,30})
+    \s+(?-i:[A-Z][a-z]{1,20}\s+([A-Z][a-z]{1,30}))
     """,
 )
 _LASTNAME_EXPLICIT_RE = re.compile(
     r"""(?ix)
-    \b(?:my\s+last\s+name\s+is|last\s+name['’]s)\s+([A-Z][a-z]{1,30})
+    \b(?:my\s+last\s+name\s+is|last\s+name['’]s)\s+(?-i:([A-Z][a-z]{1,30}))
     """,
 )
 
@@ -221,9 +226,10 @@ EXTRACTORS: dict[str, Callable[[str], str | None]] = {
 
 # ---------------------------------------------------------------- HIGHLIGHTS
 # Greeting-style name triggers ("Hi, Jim", "Hello Sarah", "Hey, Bob").
+# Same title-case-only capture rule as _FIRSTNAME_RE.
 _GREETING_NAME_RE = re.compile(
     r"""(?ix)
-    \b(?:hi|hello|hey)[,]?\s+([A-Z][a-z]{1,20})\b
+    \b(?:hi|hello|hey)[,]?\s+(?-i:([A-Z][a-z]{1,20}))\b
     """,
 )
 
