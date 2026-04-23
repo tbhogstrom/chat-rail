@@ -122,3 +122,32 @@ def test_set_and_get_extracted(store):
 
 def test_get_extracted_missing_returns_none(store):
     assert store.get_extracted("s-does-not-exist") is None
+
+
+def test_complete_call_keeps_session_extractable_during_grace(store, fake_redis):
+    store.store_call("s-end", {"sessionId": "s-end", "status": "Answered"})
+    store.complete_call("s-end", grace=60)
+
+    # Regular "active" view no longer includes it — dashboard still sees Disconnected
+    assert not fake_redis.sismember("calls:active", "s-end")
+    # But the extraction worker should still process it while within grace
+    assert "s-end" in store.list_active_sessions()
+
+
+def test_list_active_sessions_drops_recently_ended_after_grace_expires(store, fake_redis):
+    store.store_call("s-stale", {"sessionId": "s-stale", "status": "Answered"})
+    store.complete_call("s-stale", grace=60)
+    # Simulate grace expiry by deleting the marker key
+    fake_redis.delete("call:s-stale:extract-grace")
+
+    assert "s-stale" not in store.list_active_sessions()
+    # Should also cleanly remove from the recently-ended set as cleanup
+    assert not fake_redis.sismember("calls:recently-ended", "s-stale")
+
+
+def test_list_active_sessions_unions_active_plus_recent(store):
+    store.store_call("s-live", {"sessionId": "s-live", "status": "Answered"})
+    store.store_call("s-just-ended", {"sessionId": "s-just-ended", "status": "Answered"})
+    store.complete_call("s-just-ended", grace=60)
+
+    assert set(store.list_active_sessions()) == {"s-live", "s-just-ended"}
