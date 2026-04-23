@@ -55,18 +55,23 @@
     #toast.error { border-color: var(--red); }
     .ended { color: var(--muted); font-style: italic; }
 
-    /* Transcript highlight colors — one CSS class per rule id from the API. */
-    mark.hl { background: transparent; color: inherit; padding: 0 1px;
-              border-radius: 2px; border-bottom: 2px solid transparent; }
-    mark.hl-caller-name { background: rgba(74, 222, 128, 0.28);  border-bottom-color: #4ade80; }
-    mark.hl-rep-name    { background: rgba(124, 156, 255, 0.22); border-bottom-color: #7c9cff; }
-    mark.hl-phone       { background: rgba(251, 191, 36, 0.28);  border-bottom-color: #fbbf24; }
-    mark.hl-email       { background: rgba(168, 85, 247, 0.28);  border-bottom-color: #a855f7; }
+    /* Transcript highlight — underline only, no background fill.
+       Keeps the transcript readable and selection easy to see. */
+    mark.hl { background: transparent; color: inherit; padding: 0;
+              border-radius: 0; border-bottom: 2px solid transparent; }
+    mark.hl-caller-name { border-bottom-color: #4ade80; }   /* green */
+    mark.hl-rep-name    { border-bottom-color: #7c9cff; }   /* blue  */
+    mark.hl-phone       { border-bottom-color: #fbbf24; }   /* amber */
+    mark.hl-email       { border-bottom-color: #a855f7; }   /* purple */
     mark.hl-address,
     mark.hl-city,
     mark.hl-state,
-    mark.hl-zip         { background: rgba(45, 212, 191, 0.24);  border-bottom-color: #2dd4bf; }
-    mark.hl-company     { background: rgba(251, 146, 60, 0.26);  border-bottom-color: #fb923c; }
+    mark.hl-zip         { border-bottom-color: #2dd4bf; }   /* teal  */
+    mark.hl-company     { border-bottom-color: #fb923c; }   /* orange */
+
+    /* Native text selection should be easy to see across highlights. */
+    #transcript-body ::selection { background: #3b4a80; color: var(--text); }
+    #transcript-body::selection  { background: #3b4a80; color: var(--text); }
 
     #legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
     #legend .chip { font-size: 11px; padding: 2px 8px; border-radius: 3px;
@@ -195,14 +200,36 @@
       return html;
     }
 
+    // Skip the innerHTML swap when it would clobber an in-progress copy or
+    // when nothing actually changed — otherwise every 3s poll would nuke the
+    // user's selection and scroll position.
+    let lastRenderedTranscript = null;
+    let lastRenderedHighlightKey = null;
+
     function renderTranscript() {
       const body = document.getElementById("transcript-body");
       if (!lastTranscript) {
         body.textContent = "Waiting for transcript…";
+        lastRenderedTranscript = null;
+        lastRenderedHighlightKey = null;
+        return;
+      }
+      const hlKey = JSON.stringify(lastHighlights);
+      if (lastTranscript === lastRenderedTranscript
+          && hlKey === lastRenderedHighlightKey) {
+        return;  // nothing to redraw
+      }
+      // If the user has an active selection inside the transcript, defer the
+      // re-render so Ctrl-C works. Next poll will retry.
+      const sel = window.getSelection && window.getSelection();
+      if (sel && sel.toString().length > 0
+          && sel.anchorNode && body.contains(sel.anchorNode)) {
         return;
       }
       const atBottom = Math.abs(body.scrollHeight - body.scrollTop - body.clientHeight) < 20;
       body.innerHTML = buildHighlightedHTML(lastTranscript, lastHighlights);
+      lastRenderedTranscript = lastTranscript;
+      lastRenderedHighlightKey = hlKey;
       if (atBottom) body.scrollTop = body.scrollHeight;
     }
 
