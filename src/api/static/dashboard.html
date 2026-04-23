@@ -54,6 +54,24 @@
     #toast.show { opacity: 1; pointer-events: auto; }
     #toast.error { border-color: var(--red); }
     .ended { color: var(--muted); font-style: italic; }
+
+    /* Transcript highlight colors — one CSS class per rule id from the API. */
+    mark.hl { background: transparent; color: inherit; padding: 0 1px;
+              border-radius: 2px; border-bottom: 2px solid transparent; }
+    mark.hl-caller-name { background: rgba(74, 222, 128, 0.28);  border-bottom-color: #4ade80; }
+    mark.hl-rep-name    { background: rgba(124, 156, 255, 0.22); border-bottom-color: #7c9cff; }
+    mark.hl-phone       { background: rgba(251, 191, 36, 0.28);  border-bottom-color: #fbbf24; }
+    mark.hl-email       { background: rgba(168, 85, 247, 0.28);  border-bottom-color: #a855f7; }
+    mark.hl-address,
+    mark.hl-city,
+    mark.hl-state,
+    mark.hl-zip         { background: rgba(45, 212, 191, 0.24);  border-bottom-color: #2dd4bf; }
+    mark.hl-company     { background: rgba(251, 146, 60, 0.26);  border-bottom-color: #fb923c; }
+
+    #legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+    #legend .chip { font-size: 11px; padding: 2px 8px; border-radius: 3px;
+                    border-bottom: 2px solid; text-transform: uppercase;
+                    letter-spacing: 0.06em; }
   </style>
 </head>
 <body>
@@ -64,6 +82,14 @@
   <main>
     <section id="transcript">
       <h2>Live Transcript</h2>
+      <div id="legend">
+        <span class="chip hl-caller-name">Caller</span>
+        <span class="chip hl-rep-name">Rep</span>
+        <span class="chip hl-phone">Phone</span>
+        <span class="chip hl-email">Email</span>
+        <span class="chip hl-address">Location</span>
+        <span class="chip hl-company">Company</span>
+      </div>
       <div id="transcript-body">Waiting for transcript…</div>
     </section>
     <section id="fields">
@@ -129,7 +155,56 @@
 
     let currentSid = null;
     let lastContactId = null;
+    let lastTranscript = "";
+    let lastHighlights = [];
     const touchedFields = new Set();
+
+    // ---- transcript renderer (ported from slop-cop's buildHighlightedHTML) ----
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\n/g, "<br>");
+    }
+
+    function buildHighlightedHTML(text, highlights) {
+      if (!text) return "";
+      if (!highlights || highlights.length === 0) return escapeHtml(text);
+      const events = new Set([0, text.length]);
+      for (const h of highlights) {
+        events.add(Math.max(0, h.start));
+        events.add(Math.min(text.length, h.end));
+      }
+      const sorted = [...events].sort((a, b) => a - b);
+      let html = "";
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const s = sorted[i], e = sorted[i + 1];
+        const chunk = text.slice(s, e);
+        if (!chunk) continue;
+        const matching = highlights.filter(h => h.start <= s && h.end >= e);
+        if (matching.length === 0) {
+          html += escapeHtml(chunk);
+        } else {
+          // Shortest-span wins (most specific).
+          const primary = matching.reduce((a, b) =>
+            (a.end - a.start) <= (b.end - b.start) ? a : b
+          );
+          html += `<mark class="hl hl-${primary.ruleId}">${escapeHtml(chunk)}</mark>`;
+        }
+      }
+      return html;
+    }
+
+    function renderTranscript() {
+      const body = document.getElementById("transcript-body");
+      if (!lastTranscript) {
+        body.textContent = "Waiting for transcript…";
+        return;
+      }
+      const atBottom = Math.abs(body.scrollHeight - body.scrollTop - body.clientHeight) < 20;
+      body.innerHTML = buildHighlightedHTML(lastTranscript, lastHighlights);
+      if (atBottom) body.scrollTop = body.scrollHeight;
+    }
 
     function authHeaders(extra = {}) {
       return { "x-api-key": apiKey, "content-type": "application/json", ...extra };
@@ -171,10 +246,8 @@
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
         const data = await r.json();
         currentSid = data.call.sessionId;
-        const transcript = data.transcript || "Waiting for transcript…";
-        document.getElementById("transcript-body").textContent = transcript;
-        const body = document.getElementById("transcript-body");
-        body.scrollTop = body.scrollHeight;
+        lastTranscript = data.transcript || "";
+        renderTranscript();
         document.getElementById("session-info").textContent =
           `${data.call.direction || ""} • ${data.call.status || ""} • ${currentSid}`;
       } catch (e) {
@@ -191,7 +264,10 @@
         if (r.status === 404) return;  // no extraction yet
         if (!r.ok) return;
         const extracted = await r.json();
+        lastHighlights = extracted.highlights || [];
+        renderTranscript();
         for (const [key, value] of Object.entries(extracted)) {
+          if (key === "highlights") continue;  // rendered as <mark> spans, not an input
           const input = getFieldInput(key);
           const dot = getFieldDot(key);
           if (!input || !dot) continue;
