@@ -108,3 +108,11 @@ class CallStore:
         if raw is None:
             return None
         return json.loads(raw)
+
+    def set_rep_pointer(self, extension_id: str, session_id: str) -> None:
+        """Point rep:{extension_id}:current at this session.
+
+        Separate from store_call because queue-routed calls need to point
+        every party's extensionId at the same session, not just the primary.
+        """
+        self.redis.set(f"rep:{extension_id}:current", session_id)

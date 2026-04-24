@@ -59,6 +59,18 @@ def process_telephony_event(event: dict, store: CallStore,
         # -> Hold -> ...); at INFO they drown out the interesting lines.
         logger.debug("Call event: %s (status=%s)", session_id, status)
         store.store_call(session_id, call_data)
+        # Queue-routed / multi-leg calls put the actual rep in parties[1+].
+        # Point rep:{extId}:current at this session for EVERY extensionId
+        # seen, not just the primary party — otherwise the dashboard at
+        # ?rep=<doug> fetches a stale earlier call because Doug's leg was
+        # never the primary party.
+        for p in parties:
+            for ext_id in filter(None, [
+                p.get("extensionId"),
+                (p.get("to")   or {}).get("extensionId"),
+                (p.get("from") or {}).get("extensionId"),
+            ]):
+                store.set_rep_pointer(ext_id, session_id)
 
     # Supervision trigger — scan all parties for a monitored rep.
     if not (sidecar and monitored_extensions):

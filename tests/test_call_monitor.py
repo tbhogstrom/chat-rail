@@ -350,3 +350,58 @@ def test_load_ext_display_map_returns_empty_on_api_failure():
     platform = MagicMock()
     platform.get.side_effect = RuntimeError("RC down")
     assert _load_ext_display_map(platform) == {}
+
+
+# ---------------------------------------------------------------- multi-party rep pointers
+def test_multi_party_sets_rep_pointer_for_every_party(store, fake_redis):
+    """Queue-routed inbound: primary party is the queue, rep appears in parties[1].
+    Both extensions should map to this session so any dashboard URL finds it."""
+    event = {
+        "body": {
+            "telephonySessionId": "s-queue",
+            "parties": [
+                {
+                    "status": {"code": "Answered"},
+                    "direction": "Inbound",
+                    "to": {"extensionId": "302988053", "name": "Sales Queue"},
+                    "from": {"phoneNumber": "+15551234567"},
+                },
+                {
+                    "status": {"code": "Answered"},
+                    "direction": "Inbound",
+                    "to": {"extensionId": "576959052", "name": "Doug Stoker"},
+                    "from": {"phoneNumber": "+15551234567"},
+                },
+            ],
+        }
+    }
+    process_telephony_event(event, store, monitored_extensions=["576959052"])
+    assert fake_redis.get("rep:302988053:current") == "s-queue"
+    assert fake_redis.get("rep:576959052:current") == "s-queue"
+
+
+def test_inbound_to_phonenumber_still_points_the_rep(store, fake_redis):
+    """Inbound where primary party carries only to.phoneNumber='119' (no
+    extensionId). A second party with the rep's extensionId should still set
+    rep:576959052:current."""
+    event = {
+        "body": {
+            "telephonySessionId": "s-119",
+            "parties": [
+                {
+                    "status": {"code": "Proceeding"},
+                    "direction": "Inbound",
+                    "to": {"phoneNumber": "119"},
+                    "from": {"phoneNumber": "+15039059040", "extensionId": "313690053"},
+                },
+                {
+                    "status": {"code": "Proceeding"},
+                    "direction": "Inbound",
+                    "to": {"extensionId": "576959052"},
+                    "from": {"phoneNumber": "+15039059040"},
+                },
+            ],
+        }
+    }
+    process_telephony_event(event, store, monitored_extensions=["576959052"])
+    assert fake_redis.get("rep:576959052:current") == "s-119"
