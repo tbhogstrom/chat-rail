@@ -40,6 +40,58 @@ def test_split_trims_whitespace_and_blank_lines():
     assert "\n\nDEAL DESCRIPTION" not in out["header"]
 
 
+# Real-world output observed from the model: markdown-bold labels, `---`
+# dividers between sections, and the literal `HEADER:` label dropped (the
+# header line emitted directly).
+MARKDOWN_FORMAT = """ACTION REQUIRED | SFW Construction Service Agreement | Test Homeowner | 2026-Jun
+
+---
+
+**DEAL DESCRIPTION:**
+SFW Construction will inspect and repair an active roof leak at the residence.
+
+---
+
+**SCOPE:**
+This is an active leak and will be treated as a priority. SFW will inspect the roof, locate the source, remove damaged materials, and complete all necessary repairs.
+
+---
+
+**EMAIL:**
+
+Dear Test Homeowner,
+
+We take your situation seriously. Thank you for choosing SFW Construction."""
+
+
+def test_split_markdown_bold_and_missing_header_label():
+    out = split_sections(MARKDOWN_FORMAT)
+    assert out["header"] == (
+        "ACTION REQUIRED | SFW Construction Service Agreement | Test Homeowner | 2026-Jun"
+    )
+    assert out["deal_description"].startswith("SFW Construction will inspect")
+    assert out["scope"].startswith("This is an active leak")
+    assert out["email"].endswith("Thank you for choosing SFW Construction.")
+    assert "**" not in out["scope"]
+    assert "---" not in out["header"]
+    assert out["partial"] is False
+    assert out["raw"] is None
+
+
+def test_split_bold_labels_with_explicit_header():
+    text = (
+        "**HEADER:**\nACTION REQUIRED | SFW | Bob | 2026-Jun\n\n"
+        "**DEAL DESCRIPTION:**\nReplace the water heater.\n\n"
+        "**SCOPE:**\nSFW will replace the failed water heater and test the install.\n\n"
+        "**EMAIL:**\nThanks Bob. Thank you for choosing SFW Construction."
+    )
+    out = split_sections(text)
+    assert out["header"].startswith("ACTION REQUIRED")
+    assert out["deal_description"] == "Replace the water heater."
+    assert out["scope"].startswith("SFW will replace")
+    assert out["partial"] is False
+
+
 def test_build_user_message_includes_all_fields():
     inp = AgreementInput(
         customer_name="Jane Doe",

@@ -167,6 +167,7 @@ def test_post_hubspot_lookup_no_match_returns_404(client):
 
 
 @patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.HUBSPOT_PORTAL_ID", "")
 def test_post_hubspot_contacts_upsert(client):
     fake = AsyncMock(return_value={"id": "42"})
     with patch("src.api.routes._hs_client") as hs:
@@ -179,6 +180,7 @@ def test_post_hubspot_contacts_upsert(client):
 
 
 @patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.HUBSPOT_PORTAL_ID", "")
 def test_post_hubspot_deal(client):
     fake = AsyncMock(return_value={"id": "d-7"})
     with patch("src.api.routes._hs_client") as hs:
