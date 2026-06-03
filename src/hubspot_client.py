@@ -3,12 +3,49 @@
 Uses a Private App access token (Bearer auth). No SDK dependency.
 """
 import json as _json
+import re
 
 import httpx
 
 
 class HubSpotError(Exception):
     """Non-2xx from HubSpot. Message includes status code + body snippet."""
+
+
+_EXT_RE = re.compile(r"(?:ext\.?|x|extension)\s*(\d+)\s*$", re.IGNORECASE)
+
+
+def normalize_phone(raw) -> str | None:
+    """Coerce a phone number into HubSpot's required E.164 format.
+
+    HubSpot's `phone` property validation requires `+15032874764` (optionally
+    `... ext 123`). CallRail numbers usually arrive that way already, but typed
+    or oddly-formatted values do not. Returns None for input with no digits.
+    US 10-digit and 1+10-digit numbers get a `+1` prefix; values already
+    starting with `+` keep their digits; anything else is a best-effort `+digits`.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    ext = ""
+    m = _EXT_RE.search(s)
+    if m:
+        ext = f" ext {m.group(1)}"
+        s = s[: m.start()]
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return None
+    if s.lstrip().startswith("+"):
+        e164 = "+" + digits
+    elif len(digits) == 10:
+        e164 = "+1" + digits
+    elif len(digits) == 11 and digits.startswith("1"):
+        e164 = "+" + digits
+    else:
+        e164 = "+" + digits
+    return e164 + ext
 
 
 class HubSpotClient:
@@ -59,12 +96,35 @@ class HubSpotClient:
                 return results[0]
         return None
 
+    async def search_contacts(self, query: str, limit: int = 5) -> list[dict]:
+        """Free-text search across name, email, phone, and company.
+
+        HubSpot's `query` field matches a single search string against the
+        searchable contact properties, so one call covers name + phone + email.
+        Returns up to `limit` matches (each a dict with `id` + `properties`).
+        """
+        body = {
+            "query": query,
+            "limit": limit,
+            "properties": ["firstname", "lastname", "email", "phone", "company",
+                           "address", "city", "state", "zip"],
+        }
+        data = await self._request("POST", "/crm/v3/objects/contacts/search", json=body)
+        return data.get("results", [])
+
     async def upsert_contact(self, props: dict) -> dict:
         """Create if no match on email, else PATCH the existing contact.
 
         `props` is a dict like {"email": ..., "firstname": ..., ...}. Email is
-        the idempotency key.
+        the idempotency key. A `phone` value is normalized to E.164 (HubSpot
+        rejects other formats); if it has no digits it is dropped.
         """
+        if props.get("phone"):
+            normalized = normalize_phone(props["phone"])
+            props = {**props, "phone": normalized}
+            if normalized is None:
+                del props["phone"]
+
         existing = None
         if "email" in props and props["email"]:
             existing = await self.lookup_contact(email=props["email"])

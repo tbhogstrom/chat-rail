@@ -52,6 +52,11 @@
   <!-- RIGHT: form + actions -->
   <section>
     <h2>Customer</h2>
+    <div class="row">
+      <input id="searchQ" placeholder="Search HubSpot by name, phone, or email" />
+      <button class="secondary" id="searchBtn" style="flex:0 0 auto">🔍 Find</button>
+    </div>
+    <select id="searchResults" style="display:none;margin-top:6px"></select>
     <label>Customer name</label>
     <input id="name" placeholder="Jane Doe" />
     <div class="row">
@@ -200,6 +205,48 @@ function nameParts() {
   const parts = $("name").value.trim().split(/\s+/);
   return { firstname: parts[0] || "", lastname: parts.slice(1).join(" ") };
 }
+
+let _searchResults = [];
+$("searchBtn").onclick = async () => {
+  const q = $("searchQ").value.trim()
+    || [$("name").value, $("email").value, $("phone").value].map(s => s.trim()).filter(Boolean).join(" ");
+  if (!q) return toast("Type a name, phone, or email to search");
+  const btn = $("searchBtn"); btn.disabled = true; btn.textContent = "…";
+  try {
+    const d = await api("/api/hubspot/contacts/search", { query: q });
+    _searchResults = d.results || [];
+    const sel = $("searchResults");
+    if (!_searchResults.length) { sel.style.display = "none"; toast("No HubSpot matches"); return; }
+    sel.innerHTML = `<option value="">— ${_searchResults.length} match(es), pick to fill —</option>`;
+    _searchResults.forEach((c, i) => {
+      const p = c.properties || c;
+      const o = document.createElement("option");
+      o.value = i;
+      o.textContent = [`${p.firstname || ""} ${p.lastname || ""}`, p.email, p.phone, p.company]
+        .map(x => (x || "").trim()).filter(Boolean).join(" · ");
+      sel.appendChild(o);
+    });
+    sel.style.display = "";
+    toast(`Found ${_searchResults.length}`, true);
+  } catch (e) { toast("Search: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "🔍 Find"; }
+};
+$("searchResults").onchange = () => {
+  const idx = $("searchResults").value;
+  if (idx === "") return;
+  const c = _searchResults[+idx];
+  const p = c.properties || c;
+  contactId = c.id;
+  $("name").value = `${p.firstname || ""} ${p.lastname || ""}`.trim();
+  if (p.email) $("email").value = p.email;
+  if (p.phone) $("phone").value = p.phone;
+  if (p.address) $("address").value = p.address;
+  if (p.city) $("city").value = p.city;
+  if (p.state) $("state").value = p.state;
+  if (p.zip) $("zip").value = p.zip;
+  $("createDeal").disabled = false;  // existing contact selected → can create a deal
+  toast("Loaded existing contact — Create Deal is ready, or update the contact first", true);
+};
 $("createContact").onclick = async () => {
   const { firstname, lastname } = nameParts();
   try {

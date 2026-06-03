@@ -144,6 +144,31 @@ def test_post_scope_summary_no_transcript_returns_404(client):
 
 
 @patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_post_hubspot_search_returns_results(client):
+    fake = AsyncMock(return_value=[
+        {"id": "1", "properties": {"firstname": "Jane"}},
+        {"id": "2", "properties": {"firstname": "Janet"}},
+    ])
+    with patch("src.api.routes._hs_client") as hs:
+        hs.return_value.search_contacts = fake
+        r = client.post("/api/hubspot/contacts/search",
+                        json={"query": "Jane"},
+                        headers=auth_header())
+    assert r.status_code == 200
+    assert r.json() == {"results": [
+        {"id": "1", "properties": {"firstname": "Jane"}},
+        {"id": "2", "properties": {"firstname": "Janet"}},
+    ]}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_post_hubspot_search_empty_query_400(client):
+    r = client.post("/api/hubspot/contacts/search",
+                    json={"query": "  "}, headers=auth_header())
+    assert r.status_code == 400
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
 def test_post_hubspot_lookup_match(client):
     fake = AsyncMock(return_value={"id": "42", "properties": {}})
     with patch("src.api.routes._hs_client") as hs:

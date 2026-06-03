@@ -2,7 +2,53 @@ import pytest
 import respx
 import httpx
 
-from src.hubspot_client import HubSpotClient, HubSpotError
+from src.hubspot_client import HubSpotClient, HubSpotError, normalize_phone
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("+15032874764", "+15032874764"),
+    ("5032874764", "+15032874764"),
+    ("(503) 287-4764", "+15032874764"),
+    ("1-503-287-4764", "+15032874764"),
+    ("503.287.4764 x12", "+15032874764 ext 12"),
+    ("  +1 503 287 4764  ", "+15032874764"),
+    ("", None),
+    (None, None),
+    ("no digits here", None),
+])
+def test_normalize_phone(raw, expected):
+    assert normalize_phone(raw) == expected
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_contacts_returns_results_and_sends_query():
+    route = respx.post("https://api.hubapi.com/crm/v3/objects/contacts/search").mock(
+        return_value=httpx.Response(200, json={"total": 2, "results": [
+            {"id": "1", "properties": {"firstname": "Jane", "email": "jane@x.com"}},
+            {"id": "2", "properties": {"firstname": "Janet", "phone": "+15030000000"}},
+        ]})
+    )
+    client = HubSpotClient("pat-test")
+    results = await client.search_contacts("Jane")
+    assert [r["id"] for r in results] == ["1", "2"]
+    body = route.calls.last.request.content.decode()
+    assert '"query": "Jane"' in body
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_upsert_normalizes_phone_in_payload():
+    respx.post("https://api.hubapi.com/crm/v3/objects/contacts/search").mock(
+        return_value=httpx.Response(200, json={"total": 0, "results": []})
+    )
+    create = respx.post("https://api.hubapi.com/crm/v3/objects/contacts").mock(
+        return_value=httpx.Response(201, json={"id": "1"})
+    )
+    client = HubSpotClient("pat-test")
+    await client.upsert_contact({"email": "a@b.com", "phone": "(503) 287-4764"})
+    body = create.calls.last.request.content.decode()
+    assert '"phone": "+15032874764"' in body
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@ from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException
 from src.redis_store import CallStore
 from src.api.auth import verify_api_key
-from src.api.models import ContactLookupReq, ContactProps, DealReq
+from src.api.models import ContactLookupReq, ContactProps, ContactSearchReq, DealReq
 from src.config import Config
 from src.hubspot_client import HubSpotClient, HubSpotError
 from src.scope_summarizer import summarize_scope, ScopeSummarizerError
@@ -109,6 +109,18 @@ async def post_scope_summary(session_id: str):
         code = 504 if "timed out" in str(e) else 500
         raise HTTPException(status_code=code, detail=str(e))
     return {"summary": summary}
+
+
+@hubspot_router.post("/contacts/search")
+async def post_hubspot_search(body: ContactSearchReq):
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query required")
+    try:
+        results = await _hs_client().search_contacts(query)
+    except HubSpotError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"results": results}
 
 
 @hubspot_router.post("/contacts/lookup")

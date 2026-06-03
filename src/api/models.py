@@ -7,6 +7,10 @@ class ContactLookupReq(BaseModel):
     phone: str | None = None
 
 
+class ContactSearchReq(BaseModel):
+    query: str  # free-text: matches name, email, phone, company
+
+
 class ContactProps(BaseModel):
     firstname: str | None = None
     lastname: str | None = None
