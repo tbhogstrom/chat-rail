@@ -40,6 +40,18 @@ class Config:
     # HubSpot (Phase 3)
     HUBSPOT_PRIVATE_APP_TOKEN: str = os.environ.get("HUBSPOT_PRIVATE_APP_TOKEN", "")
 
+    # Anthropic (Service Agreement Generator)
+    ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+
+    # CallRail
+    CALLRAIL_API_KEY: str = os.environ.get("CALLRAIL_API_KEY", "")
+    CALLRAIL_ACCOUNT_ID: str = os.environ.get("CALLRAIL_ACCOUNT_ID", "")
+
+    # HubSpot extras
+    HUBSPOT_PORTAL_ID: str = os.environ.get("HUBSPOT_PORTAL_ID", "")
+    HUBSPOT_SCOPE_PROPERTY: str = os.environ.get("HUBSPOT_SCOPE_PROPERTY", "scope_of_work")
+
     # Extension IDs to live-transcribe. Empty = disabled.
     MONITORED_EXTENSIONS: list[str] = [
         e.strip() for e in os.environ.get("MONITORED_EXTENSIONS", "").split(",") if e.strip()
