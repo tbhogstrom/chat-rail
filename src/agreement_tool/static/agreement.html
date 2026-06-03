@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SFW — Scope to Service Agreement</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#272b34; --fg:#e6e8ec; --muted:#9aa3b2; --accent:#3b82f6; --ok:#22c55e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); font-weight:600; }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 20px; max-width:1400px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  label { display:block; margin:8px 0 3px; color:var(--muted); font-size:12px; }
+  input, textarea, select { width:100%; background:#0d0f13; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:8px; font:inherit; }
+  textarea { resize:vertical; }
+  .row { display:flex; gap:10px; } .row > * { flex:1; }
+  .toggle { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:9px 12px; font:inherit; cursor:pointer; margin-top:10px; }
+  button.secondary { background:#2a2f3a; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .out { margin-top:12px; }
+  .out label { font-weight:600; color:var(--fg); }
+  .link { display:inline-block; margin-top:8px; color:var(--ok); text-decoration:none; }
+  #toast { position:fixed; bottom:18px; right:18px; background:#1f2937; border:1px solid var(--line); padding:10px 14px; border-radius:8px; opacity:0; transition:opacity .2s; max-width:420px; }
+  #toast.show { opacity:1; }
+  .hint { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>SFW — Scope to Service Agreement</header>
+<main>
+  <!-- LEFT: transcript + CallRail -->
+  <section>
+    <h2>Transcript</h2>
+    <div class="row">
+      <input id="callId" placeholder="CallRail call ID" />
+      <button class="secondary" id="pull" style="flex:0 0 auto">Pull from CallRail</button>
+    </div>
+    <label>Transcript / notes (primary input)</label>
+    <textarea id="notes" rows="18" placeholder="Paste or pull the call transcript, or type estimator notes…"></textarea>
+  </section>
+
+  <!-- RIGHT: form + actions -->
+  <section>
+    <h2>Customer</h2>
+    <label>Customer name</label>
+    <input id="name" placeholder="Jane Doe" />
+    <div class="row">
+      <div><label>Email</label><input id="email" type="email" /></div>
+      <div><label>Phone</label><input id="phone" /></div>
+    </div>
+    <label>Address</label>
+    <input id="address" placeholder="123 Main St" />
+    <div class="row">
+      <div><label>City</label><input id="city" /></div>
+      <div><label>State</label><input id="state" /></div>
+      <div><label>ZIP</label><input id="zip" /></div>
+    </div>
+    <div class="row">
+      <div><label>Issue type</label><input id="issue" placeholder="roof leak" /></div>
+      <div><label>Delivery</label>
+        <select id="delivery"><option value="email">Email</option><option value="text">Text</option></select>
+      </div>
+    </div>
+    <div class="toggle"><input type="checkbox" id="leak" style="width:auto" /><label for="leak" style="margin:0">Active leak / emergency</label></div>
+
+    <button id="generate">Generate Service Agreement</button>
+
+    <div class="out">
+      <label>HEADER</label><textarea id="o_header" rows="2"></textarea>
+      <label>DEAL DESCRIPTION</label><textarea id="o_deal" rows="2"></textarea>
+      <label>SCOPE (goes on the HubSpot deal → PandaDoc)</label><textarea id="o_scope" rows="6"></textarea>
+      <label>EMAIL (send to customer)</label><textarea id="o_email" rows="6"></textarea>
+      <p id="partialNote" class="hint" style="display:none">⚠ Some sections did not parse cleanly — review all boxes.</p>
+    </div>
+
+    <div class="row">
+      <button id="createContact">1 · Create Contact</button>
+      <button id="createDeal" disabled>2 · Create Deal</button>
+    </div>
+    <a class="link" id="contactLink" target="_blank" style="display:none"></a>
+    <a class="link" id="dealLink" target="_blank" style="display:none"></a>
+    <p class="hint">After the deal is created, open it in HubSpot and click your PandaDoc service-agreement template — it auto-fills from the deal (including SCOPE).</p>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const KEY_NAME = "sfw-bridge-key";
+function apiKey() {
+  let k = localStorage.getItem(KEY_NAME);
+  if (!k) { k = prompt("Enter API key"); if (k) localStorage.setItem(KEY_NAME, k); }
+  return k;
+}
+function toast(msg, ok=false) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.borderColor = ok ? "var(--ok)" : "var(--line)";
+  t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 4000);
+}
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey() },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = { detail: text }; }
+  if (!r.ok) throw new Error(data.detail || r.status);
+  return data;
+}
+const $ = id => document.getElementById(id);
+
+$("pull").onclick = async () => {
+  const id = $("callId").value.trim();
+  if (!id) return toast("Enter a CallRail call ID");
+  try {
+    const d = await api("/api/callrail/transcript", { call_id: id });
+    $("notes").value = d.transcript || "";
+    if (d.customer_name) $("name").value = d.customer_name;
+    if (d.customer_phone_number) $("phone").value = d.customer_phone_number;
+    toast("Pulled from CallRail", true);
+  } catch (e) { toast("CallRail: " + e.message); }
+};
+
+$("generate").onclick = async () => {
+  const btn = $("generate"); btn.disabled = true; btn.textContent = "Generating…";
+  try {
+    const d = await api("/api/agreement/generate", {
+      customer_name: $("name").value.trim(),
+      issue_type: $("issue").value.trim(),
+      active_leak: $("leak").checked,
+      delivery_method: $("delivery").value,
+      notes: $("notes").value,
+    });
+    $("o_header").value = d.header || "";
+    $("o_deal").value = d.deal_description || "";
+    $("o_scope").value = d.scope || (d.partial ? d.raw : "") || "";
+    $("o_email").value = d.email || "";
+    $("partialNote").style.display = d.partial ? "block" : "none";
+    toast("Agreement generated", true);
+  } catch (e) { toast("Generate: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "Generate Service Agreement"; }
+};
+
+let contactId = null;
+function nameParts() {
+  const parts = $("name").value.trim().split(/\s+/);
+  return { firstname: parts[0] || "", lastname: parts.slice(1).join(" ") };
+}
+$("createContact").onclick = async () => {
+  const { firstname, lastname } = nameParts();
+  try {
+    const d = await api("/api/hubspot/contacts", {
+      firstname, lastname,
+      email: $("email").value.trim() || null,
+      phone: $("phone").value.trim() || null,
+      address: $("address").value.trim() || null,
+      city: $("city").value.trim() || null,
+      state: $("state").value.trim() || null,
+      zip: $("zip").value.trim() || null,
+    });
+    contactId = d.contactId;
+    $("createDeal").disabled = false;
+    if (d.url) { const a = $("contactLink"); a.href = d.url; a.textContent = "↗ Open contact in HubSpot"; a.style.display = "inline-block"; }
+    toast("Contact created/updated", true);
+  } catch (e) { toast("Contact: " + e.message); }
+};
+$("createDeal").onclick = async () => {
+  if (!contactId) return toast("Create the contact first");
+  try {
+    const d = await api("/api/hubspot/deals", {
+      contactId,
+      dealname: $("o_header").value.trim() || ("Service Agreement — " + $("name").value.trim()),
+      description: $("o_deal").value.trim(),
+      scope: $("o_scope").value.trim(),
+    });
+    if (d.url) { const a = $("dealLink"); a.href = d.url; a.textContent = "↗ Open deal in HubSpot"; a.style.display = "inline-block"; }
+    toast("Deal created", true);
+  } catch (e) { toast("Deal: " + e.message); }
+};
+</script>
+</body>
+</html>
