@@ -38,3 +38,28 @@ def test_split_trims_whitespace_and_blank_lines():
     # no leading/trailing whitespace survives
     assert out["scope"] == out["scope"].strip()
     assert "\n\nDEAL DESCRIPTION" not in out["header"]
+
+
+def test_build_user_message_includes_all_fields():
+    inp = AgreementInput(
+        customer_name="Jane Doe",
+        issue_type="roof leak",
+        active_leak=True,
+        delivery_method="text",
+        notes="ceiling stain spreading over the kitchen",
+    )
+    msg = build_user_message(inp, "2026-Jun")
+    assert "Today's date: 2026-Jun" in msg
+    assert "Customer name: Jane Doe" in msg
+    assert "Issue type: roof leak" in msg
+    assert "Active leak: yes" in msg
+    assert "Delivery method: text" in msg
+    assert "Notes / scope details: ceiling stain spreading over the kitchen" in msg
+
+
+def test_build_user_message_active_leak_false_and_blank_issue():
+    inp = AgreementInput(customer_name="Bob", notes="repaint trim")
+    msg = build_user_message(inp, "2026-Jun")
+    assert "Active leak: no" in msg
+    assert "Issue type: \n" in msg  # empty issue renders blank
+    assert "Delivery method: email" in msg
