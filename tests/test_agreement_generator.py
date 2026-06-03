@@ -63,3 +63,54 @@ def test_build_user_message_active_leak_false_and_blank_issue():
     assert "Active leak: no" in msg
     assert "Issue type: \n" in msg  # empty issue renders blank
     assert "Delivery method: email" in msg
+
+
+import pytest
+import respx
+import httpx
+from unittest.mock import patch
+
+from src.agreement_tool.generator import generate_package, AgreementError
+
+_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_generate_package_returns_sections():
+    route = respx.post(_ANTHROPIC_URL).mock(
+        return_value=httpx.Response(200, json={
+            "content": [{"type": "text", "text": WELL_FORMED}],
+        })
+    )
+    inp = AgreementInput(customer_name="Jane Doe", notes="roof leak in kitchen", active_leak=True)
+    with patch("src.agreement_tool.generator.Config.ANTHROPIC_API_KEY", "sk-test"), \
+         patch("src.agreement_tool.generator.Config.ANTHROPIC_MODEL", "claude-sonnet-4-6"):
+        out = await generate_package(inp, today="2026-Jun")
+    assert out["partial"] is False
+    assert out["scope"].startswith("SFW will inspect")
+    # request shape
+    body = route.calls.last.request.content.decode()
+    assert '"model": "claude-sonnet-4-6"' in body
+    assert '"max_tokens": 1500' in body
+    assert "Active leak: yes" in body
+    assert route.calls.last.request.headers["anthropic-version"] == "2023-06-01"
+    assert route.calls.last.request.headers["x-api-key"] == "sk-test"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_generate_package_raises_on_http_error():
+    respx.post(_ANTHROPIC_URL).mock(return_value=httpx.Response(401, text="unauthorized"))
+    inp = AgreementInput(customer_name="X", notes="y")
+    with patch("src.agreement_tool.generator.Config.ANTHROPIC_API_KEY", "sk-test"):
+        with pytest.raises(AgreementError, match="401"):
+            await generate_package(inp, today="2026-Jun")
+
+
+@pytest.mark.asyncio
+async def test_generate_package_requires_key():
+    inp = AgreementInput(customer_name="X", notes="y")
+    with patch("src.agreement_tool.generator.Config.ANTHROPIC_API_KEY", ""):
+        with pytest.raises(AgreementError, match="ANTHROPIC_API_KEY"):
+            await generate_package(inp, today="2026-Jun")
