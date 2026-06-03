@@ -16,6 +16,8 @@ def create_app(store: CallStore | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(hubspot_router)
+    from src.agreement_tool.routes import agreement_router
+    app.include_router(agreement_router)
 
     @app.get("/dashboard")
     def dashboard() -> FileResponse:
