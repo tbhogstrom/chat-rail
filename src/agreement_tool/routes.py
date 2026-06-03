@@ -6,8 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.auth import verify_api_key
 from src.config import Config
-from src.agreement_tool.models import AgreementInput, CallRailReq
-from src.agreement_tool.generator import generate_package, AgreementError
+from src.agreement_tool.models import AgreementInput, CallRailReq, SowSummaryReq
+from src.agreement_tool.generator import (
+    generate_package,
+    generate_sow_summary,
+    AgreementError,
+)
 from src.agreement_tool.callrail import CallRailClient, CallRailError
 
 agreement_router = APIRouter(prefix="/api", dependencies=[Depends(verify_api_key)])
@@ -23,6 +27,15 @@ def _callrail_client() -> CallRailClient:
 async def post_generate(body: AgreementInput) -> dict:
     try:
         return await generate_package(body)
+    except AgreementError as e:
+        code = 504 if "timed out" in str(e).lower() else 502
+        raise HTTPException(status_code=code, detail=str(e))
+
+
+@agreement_router.post("/agreement/sow-summary")
+async def post_sow_summary(body: SowSummaryReq) -> dict:
+    try:
+        return {"summary": await generate_sow_summary(body.notes)}
     except AgreementError as e:
         code = 504 if "timed out" in str(e).lower() else 502
         raise HTTPException(status_code=code, detail=str(e))

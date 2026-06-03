@@ -63,6 +63,28 @@ def test_generate_endpoint_requires_auth(client):
 
 
 @patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.agreement_tool.generator.Config.ANTHROPIC_API_KEY", "sk-test")
+@respx.mock
+def test_sow_summary_endpoint_returns_summary(client):
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={
+            "content": [{"type": "text", "text": "Find and address second-story window leak."}],
+        })
+    )
+    resp = client.post("/api/agreement/sow-summary", headers=auth(), json={
+        "notes": "Caller says the upstairs window leaks when it rains.",
+    })
+    assert resp.status_code == 200
+    assert resp.json() == {"summary": "Find and address second-story window leak."}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_sow_summary_endpoint_requires_auth(client):
+    resp = client.post("/api/agreement/sow-summary", json={"notes": "x"})
+    assert resp.status_code == 401
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
 @patch("src.agreement_tool.routes.Config.CALLRAIL_API_KEY", "cr-key")
 @patch("src.agreement_tool.routes.Config.CALLRAIL_ACCOUNT_ID", "ACC123")
 @respx.mock

@@ -21,3 +21,7 @@ class AgreementPackage(BaseModel):
 
 class CallRailReq(BaseModel):
     call_id: str | None = None  # None => list recent calls
+
+
+class SowSummaryReq(BaseModel):
+    notes: str  # transcript or estimator notes to distill into a scope of work

@@ -43,7 +43,10 @@
       <button class="secondary" id="pull" style="flex:0 0 auto">Pull</button>
     </div>
     <label>Transcript / notes (primary input)</label>
-    <textarea id="notes" rows="16" placeholder="Pick a recent call above, paste a transcript, or type estimator notes…"></textarea>
+    <textarea id="notes" rows="14" placeholder="Pick a recent call above, paste a transcript, or type estimator notes…"></textarea>
+    <button id="sowBtn" style="width:100%">📝 Create SOW Summary</button>
+    <label>Scope of Work — feeds the agreement (edit freely)</label>
+    <textarea id="sow" rows="3" placeholder="Short scope of work, e.g. “Find and address second-story window leak.” Generated from the transcript above, or type your own."></textarea>
   </section>
 
   <!-- RIGHT: form + actions -->
@@ -158,7 +161,21 @@ $("pull").onclick = async () => {
   catch (e) { toast("CallRail: " + e.message); }
 };
 
+$("sowBtn").onclick = async () => {
+  const src = $("notes").value.trim();
+  if (!src) return toast("Add a transcript or notes first");
+  const btn = $("sowBtn"); btn.disabled = true; btn.textContent = "Summarizing…";
+  try {
+    const d = await api("/api/agreement/sow-summary", { notes: src });
+    $("sow").value = d.summary || "";
+    toast("SOW summary created", true);
+  } catch (e) { toast("SOW: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "📝 Create SOW Summary"; }
+};
+
 $("generate").onclick = async () => {
+  const sow = $("sow").value.trim();
+  if (!sow) return toast("Create the SOW summary first, or type one in the Scope of Work box");
   const btn = $("generate"); btn.disabled = true; btn.textContent = "Generating…";
   try {
     const d = await api("/api/agreement/generate", {
@@ -166,7 +183,7 @@ $("generate").onclick = async () => {
       issue_type: $("issue").value.trim(),
       active_leak: $("leak").checked,
       delivery_method: $("delivery").value,
-      notes: $("notes").value,
+      notes: sow,
     });
     $("o_header").value = d.header || "";
     $("o_deal").value = d.deal_description || "";

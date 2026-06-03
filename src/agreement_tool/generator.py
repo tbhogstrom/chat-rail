@@ -80,26 +80,26 @@ def build_user_message(inp: AgreementInput, today: str) -> str:
     )
 
 
-async def generate_package(
-    inp: AgreementInput,
+async def _anthropic_text(
+    system_prompt: str,
+    user_message: str,
     *,
-    api_key: str | None = None,
-    model: str | None = None,
-    today: str | None = None,
-    timeout: float = 60.0,
-) -> dict:
-    """Call the Anthropic Messages API and split the reply into four sections."""
+    max_tokens: int,
+    api_key: str | None,
+    model: str | None,
+    timeout: float,
+) -> str:
+    """POST a single-turn Messages request and return the concatenated text."""
     api_key = api_key if api_key is not None else Config.ANTHROPIC_API_KEY
     model = model or Config.ANTHROPIC_MODEL
-    today = today or datetime.now().strftime("%Y-%b")
     if not api_key:
         raise AgreementError("ANTHROPIC_API_KEY not configured")
 
     body = {
         "model": model,
-        "max_tokens": 1500,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": build_user_message(inp, today)}],
+        "max_tokens": max_tokens,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_message}],
     }
     headers = {
         "x-api-key": api_key,
@@ -114,7 +114,7 @@ async def generate_package(
                 content=json.dumps(body).encode("utf-8"),
             )
     except httpx.TimeoutException as e:
-        raise AgreementError("generator timed out") from e
+        raise AgreementError("request timed out") from e
 
     if r.status_code >= 400:
         raise AgreementError(f"Anthropic {r.status_code}: {r.text[:300]}")
@@ -127,4 +127,48 @@ async def generate_package(
     )
     if not text.strip():
         raise AgreementError("Anthropic returned empty content")
+    return text
+
+
+async def generate_package(
+    inp: AgreementInput,
+    *,
+    api_key: str | None = None,
+    model: str | None = None,
+    today: str | None = None,
+    timeout: float = 60.0,
+) -> dict:
+    """Call the Anthropic Messages API and split the reply into four sections."""
+    today = today or datetime.now().strftime("%Y-%b")
+    text = await _anthropic_text(
+        SYSTEM_PROMPT,
+        build_user_message(inp, today),
+        max_tokens=1500,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+    )
     return split_sections(text)
+
+
+SOW_SYSTEM_PROMPT = """You distill a construction sales call transcript or estimator notes into a brief internal scope of work for SFW Construction.
+
+Output ONLY the scope of work and nothing else. Length ranges from a short phrase (e.g. "Find and address second-story window leak") up to two sentences. State plainly what work the customer needs and where, plus any clear budget or timeline constraint. No preamble, no labels, no headings, no markdown, no bullet points, no customer-facing or salesy language. Never invent details beyond what the input provides."""
+
+
+async def generate_sow_summary(
+    transcript: str,
+    *,
+    api_key: str | None = None,
+    model: str | None = None,
+    timeout: float = 30.0,
+) -> str:
+    """Distill a transcript / notes into a short scope-of-work summary."""
+    return (await _anthropic_text(
+        SOW_SYSTEM_PROMPT,
+        transcript,
+        max_tokens=200,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+    )).strip()
