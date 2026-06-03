@@ -93,6 +93,24 @@ async def test_create_deal_with_association():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_deal_writes_scope_property():
+    create = respx.post("https://api.hubapi.com/crm/v3/objects/deals").mock(
+        return_value=httpx.Response(201, json={"id": "D9"})
+    )
+    client = HubSpotClient("pat-test")
+    result = await client.create_deal(
+        contact_id="42", dealname="ACTION REQUIRED | ...",
+        description="Repair roof leak.", scope="SFW will inspect...",
+        scope_property="scope_of_work",
+    )
+    assert result["id"] == "D9"
+    body = create.calls.last.request.content.decode()
+    assert '"scope_of_work": "SFW will inspect..."' in body
+    assert '"description": "Repair roof leak."' in body
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_auth_error_raises_hubspoterror():
     respx.post("https://api.hubapi.com/crm/v3/objects/contacts/search").mock(
         return_value=httpx.Response(401, json={"message": "bad token"})

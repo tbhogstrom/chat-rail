@@ -84,14 +84,20 @@ class HubSpotClient:
         )
 
     async def create_deal(self, contact_id: str, dealname: str,
-                           description: str, stage: str | None = None) -> dict:
+                           description: str, stage: str | None = None,
+                           scope: str | None = None,
+                           scope_property: str = "scope_of_work") -> dict:
         """Create a deal associated with the given contact id.
 
         When stage is None, HubSpot uses the default pipeline's default stage.
+        When scope is provided, it is written to `scope_property` (the custom
+        Deal property the PandaDoc template tokenizes).
         """
         props = {"dealname": dealname, "description": description}
         if stage is not None:
             props["dealstage"] = stage
+        if scope:
+            props[scope_property] = scope
         body = {
             "properties": props,
             "associations": [{
