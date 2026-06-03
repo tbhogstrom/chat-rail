@@ -42,7 +42,8 @@ class Config:
 
     # Anthropic (Service Agreement Generator)
     ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
-    ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    # `or` (not a default arg) so a present-but-empty env var still falls back.
+    ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6"
 
     # CallRail
     CALLRAIL_API_KEY: str = os.environ.get("CALLRAIL_API_KEY", "")
