@@ -35,11 +35,15 @@
   <section>
     <h2>Transcript</h2>
     <div class="row">
-      <input id="callId" placeholder="CallRail call ID" />
-      <button class="secondary" id="pull" style="flex:0 0 auto">Pull from CallRail</button>
+      <select id="callSelect" style="flex:1"><option value="">— recent CallRail calls —</option></select>
+      <button class="secondary" id="loadCalls" style="flex:0 0 auto">↻ Load</button>
+    </div>
+    <div class="row">
+      <input id="callId" placeholder="…or paste a CallRail call ID" />
+      <button class="secondary" id="pull" style="flex:0 0 auto">Pull</button>
     </div>
     <label>Transcript / notes (primary input)</label>
-    <textarea id="notes" rows="18" placeholder="Paste or pull the call transcript, or type estimator notes…"></textarea>
+    <textarea id="notes" rows="16" placeholder="Pick a recent call above, paste a transcript, or type estimator notes…"></textarea>
   </section>
 
   <!-- RIGHT: form + actions -->
@@ -112,16 +116,46 @@ async function api(path, body) {
 }
 const $ = id => document.getElementById(id);
 
+async function pullTranscript(id) {
+  const d = await api("/api/callrail/transcript", { call_id: id });
+  $("notes").value = d.transcript || "";
+  if (d.customer_name) $("name").value = d.customer_name;
+  if (d.customer_phone_number) $("phone").value = d.customer_phone_number;
+  return d;
+}
+
+$("loadCalls").onclick = async () => {
+  const btn = $("loadCalls"); btn.disabled = true; btn.textContent = "…";
+  try {
+    const d = await api("/api/callrail/transcript", {});  // no call_id => recent list
+    const sel = $("callSelect");
+    sel.innerHTML = '<option value="">— recent CallRail calls —</option>';
+    (d.calls || []).forEach(c => {
+      const o = document.createElement("option");
+      o.value = c.id;
+      const when = (c.start_time || "").replace("T", " ").replace("Z", "");
+      o.textContent = [c.customer_name || "Unknown", c.customer_phone_number, c.source, when]
+        .filter(Boolean).join(" · ");
+      sel.appendChild(o);
+    });
+    toast(`Loaded ${(d.calls || []).length} recent calls`, true);
+  } catch (e) { toast("CallRail: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "↻ Load"; }
+};
+
+$("callSelect").onchange = async () => {
+  const id = $("callSelect").value;
+  if (!id) return;
+  $("callId").value = id;
+  try { await pullTranscript(id); toast("Pulled from CallRail", true); }
+  catch (e) { toast("CallRail: " + e.message); }
+};
+
 $("pull").onclick = async () => {
   const id = $("callId").value.trim();
-  if (!id) return toast("Enter a CallRail call ID");
-  try {
-    const d = await api("/api/callrail/transcript", { call_id: id });
-    $("notes").value = d.transcript || "";
-    if (d.customer_name) $("name").value = d.customer_name;
-    if (d.customer_phone_number) $("phone").value = d.customer_phone_number;
-    toast("Pulled from CallRail", true);
-  } catch (e) { toast("CallRail: " + e.message); }
+  if (!id) return toast("Pick a recent call or paste a call ID");
+  try { await pullTranscript(id); toast("Pulled from CallRail", true); }
+  catch (e) { toast("CallRail: " + e.message); }
 };
 
 $("generate").onclick = async () => {
