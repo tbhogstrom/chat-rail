@@ -33,6 +33,16 @@ def _hs_client() -> HubSpotClient:
     return HubSpotClient(Config.HUBSPOT_PRIVATE_APP_TOKEN)
 
 
+def _contact_url(contact_id: str) -> str | None:
+    pid = Config.HUBSPOT_PORTAL_ID
+    return f"https://app.hubspot.com/contacts/{pid}/record/0-1/{contact_id}" if pid else None
+
+
+def _deal_url(deal_id: str) -> str | None:
+    pid = Config.HUBSPOT_PORTAL_ID
+    return f"https://app.hubspot.com/contacts/{pid}/record/0-3/{deal_id}" if pid else None
+
+
 @router.get("/active")
 def get_active_calls():
     store = get_store()
@@ -124,7 +134,7 @@ async def post_hubspot_contact(body: ContactProps):
         result = await _hs_client().upsert_contact(props)
     except HubSpotError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return {"contactId": result["id"]}
+    return {"contactId": result["id"], "url": _contact_url(result["id"])}
 
 
 @hubspot_router.post("/deals")
@@ -135,7 +145,9 @@ async def post_hubspot_deal(body: DealReq):
             dealname=body.dealname,
             description=body.description,
             stage=body.stage,
+            scope=body.scope,
+            scope_property=Config.HUBSPOT_SCOPE_PROPERTY,
         )
     except HubSpotError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return {"dealId": result["id"]}
+    return {"dealId": result["id"], "url": _deal_url(result["id"])}

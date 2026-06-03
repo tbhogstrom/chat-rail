@@ -27,3 +27,4 @@ class DealReq(BaseModel):
     dealname: str
     description: str
     stage: str | None = None
+    scope: str | None = None

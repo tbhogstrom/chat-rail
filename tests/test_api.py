@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 from src.redis_store import CallStore
 from src.api.main import create_app
+import respx
+import httpx
 
 
 @pytest.fixture
@@ -173,7 +175,7 @@ def test_post_hubspot_contacts_upsert(client):
                         json={"email": "a@b.com", "firstname": "A"},
                         headers=auth_header())
     assert r.status_code == 200
-    assert r.json() == {"contactId": "42"}
+    assert r.json() == {"contactId": "42", "url": None}
 
 
 @patch("src.api.auth.Config.API_KEY", API_KEY)
@@ -186,4 +188,26 @@ def test_post_hubspot_deal(client):
                               "description": "scope here"},
                         headers=auth_header())
     assert r.status_code == 200
-    assert r.json() == {"dealId": "d-7"}
+    assert r.json() == {"dealId": "d-7", "url": None}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.HUBSPOT_PRIVATE_APP_TOKEN", "pat-test")
+@patch("src.api.routes.Config.HUBSPOT_PORTAL_ID", "8210108")
+@patch("src.api.routes.Config.HUBSPOT_SCOPE_PROPERTY", "scope_of_work")
+@respx.mock
+def test_create_deal_passes_scope_and_returns_url(client):
+    respx.post("https://api.hubapi.com/crm/v3/objects/deals").mock(
+        return_value=httpx.Response(201, json={"id": "D9"})
+    )
+    # clear the lru_cache so the patched token is used
+    from src.api.routes import _hs_client
+    _hs_client.cache_clear()
+    resp = client.post("/api/hubspot/deals", headers=auth_header(), json={
+        "contactId": "42", "dealname": "ACTION", "description": "Repair.",
+        "scope": "SFW will inspect.",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["dealId"] == "D9"
+    assert data["url"] == "https://app.hubspot.com/contacts/8210108/record/0-3/D9"
