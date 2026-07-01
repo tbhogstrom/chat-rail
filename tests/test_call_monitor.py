@@ -7,6 +7,7 @@ from src.call_monitor import (
     process_telephony_event,
     _fetch_active_session_events,
     _load_ext_display_map,
+    build_monitored_roster,
 )
 
 
@@ -428,3 +429,18 @@ def test_inbound_to_phonenumber_still_points_the_rep(store, fake_redis):
     }
     process_telephony_event(event, store, monitored_extensions=["576959052"])
     assert fake_redis.get("rep:576959052:current") == "s-119"
+
+
+def test_build_monitored_roster_filters_to_monitored():
+    display = {"119": "Doug Stoker", "121": "Travis Watters", "200": "IVR"}
+    numbers = {"119": "119", "121": "121", "200": "200"}
+    roster = build_monitored_roster(display, numbers, ["119", "121"])
+    assert roster == {
+        "119": {"name": "Doug Stoker", "number": "119"},
+        "121": {"name": "Travis Watters", "number": "121"},
+    }
+
+
+def test_build_monitored_roster_handles_missing_maps():
+    roster = build_monitored_roster({}, {}, ["119"])
+    assert roster == {"119": {"name": None, "number": None}}

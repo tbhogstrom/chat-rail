@@ -217,6 +217,22 @@ def _resolve_rep_first_name(parties, monitored_extensions, ext_display_map):
     return None
 
 
+def build_monitored_roster(display_map: dict, number_map: dict,
+                           monitored: list[str]) -> dict[str, dict]:
+    """Roster ({extId: {"name","number"}}) for the monitored extensions only.
+
+    Name/number come from the account snapshot maps; either may be None if the
+    map didn't include that extension.
+    """
+    return {
+        ext_id: {
+            "name": display_map.get(ext_id),
+            "number": number_map.get(ext_id),
+        }
+        for ext_id in monitored
+    }
+
+
 async def run_monitor(store: CallStore, sidecar=None) -> None:
     """Connect to RC WebSocket and process telephony events, reconnecting on disconnect."""
     event_filters = ["/restapi/v1.0/account/~/telephony/sessions"]
@@ -238,6 +254,11 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
             logger.info("Loaded ext-number map for %d extensions", len(ext_number_map))
             ext_display_map = _load_ext_display_map(platform)
             logger.info("Loaded ext-display map for %d extensions", len(ext_display_map))
+
+            roster = build_monitored_roster(
+                ext_display_map, ext_number_map, Config.MONITORED_EXTENSIONS)
+            store.set_rep_roster(roster)
+            logger.info("Persisted roster for %d monitored rep(s)", len(roster))
 
             snapshot = _fetch_active_session_events(platform)
             if snapshot:
