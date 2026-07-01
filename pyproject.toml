@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.28",
     "python-dotenv>=1.0",
     "websockets>=14.0",
+    "tzdata>=2025.1",
 ]
 
 [project.optional-dependencies]

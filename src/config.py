@@ -57,3 +57,6 @@ class Config:
     MONITORED_EXTENSIONS: list[str] = [
         e.strip() for e in os.environ.get("MONITORED_EXTENSIONS", "").split(",") if e.strip()
     ]
+
+    # Timezone for metrics day/week boundaries (IANA name). Week starts Monday.
+    METRICS_TIMEZONE: str = os.environ.get("METRICS_TIMEZONE") or "America/Los_Angeles"

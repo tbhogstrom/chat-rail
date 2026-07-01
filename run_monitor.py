@@ -7,6 +7,7 @@ from upstash_redis import Redis
 
 from src.call_monitor import run_monitor
 from src.config import Config
+from src.metrics_worker import run_metrics_worker
 from src.recording_transcriber import transcribe_recording_url
 from src.redis_store import CallStore
 
@@ -63,6 +64,8 @@ async def main():
         tasks.append(poll_for_recordings(store))
     else:
         logger.warning("DEEPGRAM_API_KEY not set — post-call transcription disabled")
+
+    tasks.append(run_metrics_worker(store))
 
     await asyncio.gather(*tasks)
 
