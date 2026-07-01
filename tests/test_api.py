@@ -303,6 +303,42 @@ def test_get_reps_outbound_uses_to_number(client, store):
     assert doug["callerNumber"] == "+15129990000"
 
 
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119"])
+def test_get_reps_includes_metrics(client, store):
+    store.set_rep_roster({"119": {"name": "Doug Stoker", "number": "119"}})
+    store.set_rep_metrics({"119": {"inboundToday": 1, "inboundWeek": 2,
+                                   "outboundToday": 3, "outboundWeek": 4}})
+    rep = client.get("/api/calls/reps", headers=auth_header()).json()["reps"][0]
+    assert rep["metrics"] == {"inboundToday": 1, "inboundWeek": 2,
+                              "outboundToday": 3, "outboundWeek": 4}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119"])
+def test_get_reps_metrics_null_when_unset(client, store):
+    store.set_rep_roster({"119": {"name": "Doug Stoker", "number": "119"}})
+    rep = client.get("/api/calls/reps", headers=auth_header()).json()["reps"][0]
+    assert rep["metrics"] is None
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_recent_calls(client, store):
+    store.set_recent_calls([{"sessionId": "s1", "repName": "Doug",
+                             "direction": "Outbound", "connected": True}])
+    r = client.get("/api/calls/recent", headers=auth_header())
+    assert r.status_code == 200
+    assert r.json() == {"calls": [{"sessionId": "s1", "repName": "Doug",
+                                   "direction": "Outbound", "connected": True}]}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_recent_calls_empty(client):
+    r = client.get("/api/calls/recent", headers=auth_header())
+    assert r.status_code == 200
+    assert r.json() == {"calls": []}
+
+
 def test_root_serves_overview_page(client):
     resp = client.get("/")
     assert resp.status_code == 200

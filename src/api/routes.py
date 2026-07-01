@@ -79,6 +79,7 @@ def get_active_calls():
 def get_reps():
     store = get_store()
     roster = store.get_rep_roster()
+    metrics = store.get_rep_metrics()
     active_ids = {c.get("sessionId") for c in store.list_active_calls()}
     reps = []
     for ext_id in Config.MONITORED_EXTENSIONS:
@@ -94,8 +95,15 @@ def get_reps():
             "direction": call.get("direction") if on_call else None,
             "sessionId": call.get("sessionId") if on_call else None,
             "callerNumber": _caller_number(call) if on_call else None,
+            "metrics": metrics.get(ext_id),
         })
     return {"reps": reps}
+
+
+@router.get("/recent")
+def get_recent_calls():
+    store = get_store()
+    return {"calls": store.get_recent_calls()}
 
 
 @router.get("/latest")
