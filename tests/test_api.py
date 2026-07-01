@@ -238,3 +238,66 @@ def test_create_deal_passes_scope_and_returns_url(client):
     data = resp.json()
     assert data["dealId"] == "D9"
     assert data["url"] == "https://app.hubspot.com/contacts/8210108/record/0-3/D9"
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119", "121"])
+def test_get_reps_lists_monitored_with_active_and_idle(client, store):
+    store.set_rep_roster({
+        "119": {"name": "Doug Stoker", "number": "119"},
+        "121": {"name": "Travis Watters", "number": "121"},
+    })
+    # Doug (119) on an active inbound call; store_call sets the rep pointer.
+    store.store_call("s-1", {
+        "sessionId": "s-1", "status": "Answered", "direction": "Inbound",
+        "from": {"phoneNumber": "+15125551234"}, "to": {"extensionId": "119"},
+    })
+
+    resp = client.get("/api/calls/reps", headers=auth_header())
+    assert resp.status_code == 200
+    reps = resp.json()["reps"]
+    assert [r["extId"] for r in reps] == ["119", "121"]
+
+    doug = reps[0]
+    assert doug["name"] == "Doug Stoker"
+    assert doug["number"] == "119"
+    assert doug["onCall"] is True
+    assert doug["status"] == "Answered"
+    assert doug["callerNumber"] == "+15125551234"
+
+    travis = reps[1]
+    assert travis["onCall"] is False
+    assert travis["status"] is None
+    assert travis["callerNumber"] is None
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", [])
+def test_get_reps_empty_roster(client):
+    resp = client.get("/api/calls/reps", headers=auth_header())
+    assert resp.status_code == 200
+    assert resp.json() == {"reps": []}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["999"])
+def test_get_reps_missing_roster_entry_uses_placeholder(client):
+    resp = client.get("/api/calls/reps", headers=auth_header())
+    reps = resp.json()["reps"]
+    assert reps[0]["extId"] == "999"
+    assert reps[0]["name"] == "Ext 999"
+    assert reps[0]["onCall"] is False
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119"])
+def test_get_reps_outbound_uses_to_number(client, store):
+    store.set_rep_roster({"119": {"name": "Doug Stoker", "number": "119"}})
+    store.store_call("s-2", {
+        "sessionId": "s-2", "status": "Answered", "direction": "Outbound",
+        "from": {"extensionId": "119"}, "to": {"phoneNumber": "+15129990000"},
+    })
+    resp = client.get("/api/calls/reps", headers=auth_header())
+    doug = resp.json()["reps"][0]
+    assert doug["onCall"] is True
+    assert doug["callerNumber"] == "+15129990000"

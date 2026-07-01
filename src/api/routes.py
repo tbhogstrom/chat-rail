@@ -43,11 +43,41 @@ def _deal_url(deal_id: str) -> str | None:
     return f"https://app.hubspot.com/contacts/{pid}/record/0-3/{deal_id}" if pid else None
 
 
+def _caller_number(call: dict) -> str | None:
+    """The other party's phone number: `to` for outbound, else `from`."""
+    if call.get("direction") == "Outbound":
+        return (call.get("to") or {}).get("phoneNumber")
+    return (call.get("from") or {}).get("phoneNumber")
+
+
 @router.get("/active")
 def get_active_calls():
     store = get_store()
     calls = store.list_active_calls()
     return {"calls": calls, "count": len(calls)}
+
+
+@router.get("/reps")
+def get_reps():
+    store = get_store()
+    roster = store.get_rep_roster()
+    active_ids = {c.get("sessionId") for c in store.list_active_calls()}
+    reps = []
+    for ext_id in Config.MONITORED_EXTENSIONS:
+        entry = roster.get(ext_id) or {}
+        call = store.get_rep_current_call(ext_id)
+        on_call = bool(call) and call.get("sessionId") in active_ids
+        reps.append({
+            "extId": ext_id,
+            "name": entry.get("name") or f"Ext {ext_id}",
+            "number": entry.get("number"),
+            "onCall": on_call,
+            "status": call.get("status") if on_call else None,
+            "direction": call.get("direction") if on_call else None,
+            "sessionId": call.get("sessionId") if on_call else None,
+            "callerNumber": _caller_number(call) if on_call else None,
+        })
+    return {"reps": reps}
 
 
 @router.get("/latest")
