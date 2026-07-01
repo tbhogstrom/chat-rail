@@ -131,3 +131,21 @@ class CallStore:
         if raw is None:
             return {}
         return json.loads(raw)
+
+    def set_rep_metrics(self, metrics: dict) -> None:
+        """Persist per-rep call counts ({extId: {inbound/outbound Today/Week}})."""
+        self.redis.set("reps:metrics", json.dumps(metrics))
+
+    def get_rep_metrics(self) -> dict:
+        """Return per-rep call counts, or {} if not yet computed."""
+        raw = self.redis.get("reps:metrics")
+        return json.loads(raw) if raw is not None else {}
+
+    def set_recent_calls(self, calls: list) -> None:
+        """Persist the recent-calls feed (list of row dicts, newest first)."""
+        self.redis.set("overview:recent", json.dumps(calls))
+
+    def get_recent_calls(self) -> list:
+        """Return the recent-calls feed, or [] if not yet computed."""
+        raw = self.redis.get("overview:recent")
+        return json.loads(raw) if raw is not None else []

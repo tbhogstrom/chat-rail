@@ -161,3 +161,24 @@ def test_set_and_get_rep_roster(store):
 
 def test_get_rep_roster_empty_returns_empty_dict(store):
     assert store.get_rep_roster() == {}
+
+
+def test_set_and_get_rep_metrics(store):
+    m = {"119": {"inboundToday": 1, "inboundWeek": 2,
+                 "outboundToday": 3, "outboundWeek": 4}}
+    store.set_rep_metrics(m)
+    assert store.get_rep_metrics() == m
+
+
+def test_get_rep_metrics_empty_returns_empty_dict(store):
+    assert store.get_rep_metrics() == {}
+
+
+def test_set_and_get_recent_calls(store):
+    calls = [{"sessionId": "s1", "repName": "Doug", "connected": True}]
+    store.set_recent_calls(calls)
+    assert store.get_recent_calls() == calls
+
+
+def test_get_recent_calls_empty_returns_empty_list(store):
+    assert store.get_recent_calls() == []
