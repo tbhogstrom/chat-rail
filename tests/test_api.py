@@ -307,3 +307,48 @@ def test_root_serves_overview_page(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119", "121"])
+def test_get_reps_simulring_only_connected_rep_on_call(client, store):
+    """Queue/simulring session: 119 answered, 121 only rang. Both rep pointers
+    resolve to the still-active session, but only 119 is actually on the call."""
+    store.set_rep_roster({
+        "119": {"name": "Doug Stoker", "number": "119"},
+        "121": {"name": "Travis Watters", "number": "121"},
+    })
+    store.store_call("s-q", {
+        "sessionId": "s-q", "status": "Answered", "direction": "Inbound",
+        "from": {"phoneNumber": "+12065551234"}, "to": {"extensionId": "119"},
+        "activeExtIds": ["119"],
+    })
+    store.set_rep_pointer("119", "s-q")
+    store.set_rep_pointer("121", "s-q")
+
+    reps = client.get("/api/calls/reps", headers=auth_header()).json()["reps"]
+    by_ext = {r["extId"]: r for r in reps}
+    assert by_ext["119"]["onCall"] is True
+    assert by_ext["119"]["direction"] == "Inbound"
+    assert by_ext["121"]["onCall"] is False
+    assert by_ext["121"]["status"] is None
+    assert by_ext["121"]["callerNumber"] is None
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119"])
+def test_get_reps_ended_call_reads_idle(client, store):
+    """A rep whose current-call pointer resolves to a completed (no longer
+    active) session must show idle, not on-call."""
+    store.set_rep_roster({"119": {"name": "Doug Stoker", "number": "119"}})
+    store.store_call("s-old", {
+        "sessionId": "s-old", "status": "Answered", "direction": "Inbound",
+        "from": {"phoneNumber": "+12065551234"}, "to": {"extensionId": "119"},
+        "activeExtIds": ["119"],
+    })
+    store.complete_call("s-old")  # removed from calls:active; pointer remains
+
+    rep = client.get("/api/calls/reps", headers=auth_header()).json()["reps"][0]
+    assert rep["onCall"] is False
+    assert rep["status"] is None
+    assert rep["callerNumber"] is None

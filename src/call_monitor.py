@@ -12,6 +12,30 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"Proceeding", "Answered", "Hold"}
 END_STATUSES = {"Disconnected", "Gone", "VoiceMail"}
+# A party is *connected* (actually on the call) only once it answers — a
+# Proceeding (ringing) leg in a simulring/queue session is not yet on the call.
+CONNECTED_STATUSES = {"Answered", "Hold"}
+
+
+def _connected_ext_ids(parties) -> list[str]:
+    """Extension IDs of parties currently connected (Answered/Hold).
+
+    Used to tell which reps are *actually on* a multi-leg/queue session vs.
+    merely being rung. Without this, every rung rep's rep:{ext}:current points
+    at the still-active session and would read as "on call".
+    """
+    out: list[str] = []
+    for p in parties:
+        if p.get("status", {}).get("code", "") not in CONNECTED_STATUSES:
+            continue
+        for ext_id in filter(None, [
+            p.get("extensionId"),
+            (p.get("to") or {}).get("extensionId"),
+            (p.get("from") or {}).get("extensionId"),
+        ]):
+            if ext_id not in out:
+                out.append(ext_id)
+    return out
 
 
 def process_telephony_event(event: dict, store: CallStore,
@@ -52,6 +76,9 @@ def process_telephony_event(event: dict, store: CallStore,
         "from": from_info,
         "to": to_info,
         "rep_first_name": rep_first_name,
+        # Reps whose own leg is connected right now (drives the overview's
+        # on-call state; excludes rung-but-unanswered simulring legs).
+        "activeExtIds": _connected_ext_ids(parties),
     }
 
     if status in END_STATUSES:

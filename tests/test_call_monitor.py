@@ -444,3 +444,22 @@ def test_build_monitored_roster_filters_to_monitored():
 def test_build_monitored_roster_handles_missing_maps():
     roster = build_monitored_roster({}, {}, ["119"])
     assert roster == {"119": {"name": None, "number": None}}
+
+
+def test_active_ext_ids_records_only_connected_parties(store):
+    """A simulring session: 119 answered, 121 is only ringing (Proceeding).
+    Only the connected rep's extension lands in activeExtIds."""
+    event = {"body": {"telephonySessionId": "s-ring", "parties": [
+        {"status": {"code": "Answered"}, "direction": "Inbound",
+         "from": {"phoneNumber": "+12065551234"},
+         "to": {"extensionId": "119"}},
+        {"status": {"code": "Proceeding"}, "to": {"extensionId": "121"}},
+    ]}}
+    process_telephony_event(event, store)
+
+    call = store.get_call("s-ring")
+    assert call["activeExtIds"] == ["119"]
+    # Both reps' pointers still resolve to the session (dashboard findability),
+    # but only the answered rep is recorded as connected.
+    rung = store.get_rep_current_call("121")
+    assert rung is not None and rung["sessionId"] == "s-ring"

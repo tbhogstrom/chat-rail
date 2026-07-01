@@ -50,6 +50,24 @@ def _caller_number(call: dict) -> str | None:
     return (call.get("from") or {}).get("phoneNumber")
 
 
+def _rep_on_call(call: dict | None, ext_id: str, active_ids: set) -> bool:
+    """True only if the rep's own leg is live on a currently-active session.
+
+    The rep:{ext}:current pointer is set for every party of a call (so queue
+    routed calls are still findable), and it is not cleared when a rep's leg
+    ends. So "pointer resolves to an active session" is not enough — in a
+    simulring session where a colleague answered, a rung-but-unanswered rep
+    would falsely read as on-call. Require the rep to be a connected party
+    (`activeExtIds`). Older records lack that field; fall back to the pointer.
+    """
+    if not call or call.get("sessionId") not in active_ids:
+        return False
+    active_ext_ids = call.get("activeExtIds")
+    if active_ext_ids is None:
+        return True  # legacy record: no per-party data to refine with
+    return ext_id in active_ext_ids
+
+
 @router.get("/active")
 def get_active_calls():
     store = get_store()
@@ -66,7 +84,7 @@ def get_reps():
     for ext_id in Config.MONITORED_EXTENSIONS:
         entry = roster.get(ext_id) or {}
         call = store.get_rep_current_call(ext_id)
-        on_call = bool(call) and call.get("sessionId") in active_ids
+        on_call = _rep_on_call(call, ext_id, active_ids)
         reps.append({
             "extId": ext_id,
             "name": entry.get("name") or f"Ext {ext_id}",
