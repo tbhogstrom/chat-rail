@@ -116,3 +116,18 @@ class CallStore:
         every party's extensionId at the same session, not just the primary.
         """
         self.redis.set(f"rep:{extension_id}:current", session_id)
+
+    def set_rep_roster(self, roster: dict[str, dict]) -> None:
+        """Persist the monitored-rep roster ({extId: {"name", "number"}}).
+
+        Stored as a single JSON string (not a hash) so it round-trips
+        identically on upstash-redis and fakeredis.
+        """
+        self.redis.set("reps:roster", json.dumps(roster))
+
+    def get_rep_roster(self) -> dict:
+        """Return the monitored-rep roster, or {} if not yet written."""
+        raw = self.redis.get("reps:roster")
+        if raw is None:
+            return {}
+        return json.loads(raw)

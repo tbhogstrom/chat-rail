@@ -151,3 +151,13 @@ def test_list_active_sessions_unions_active_plus_recent(store):
     store.complete_call("s-just-ended", grace=60)
 
     assert set(store.list_active_sessions()) == {"s-live", "s-just-ended"}
+
+
+def test_set_and_get_rep_roster(store):
+    roster = {"119": {"name": "Doug Stoker", "number": "119"}}
+    store.set_rep_roster(roster)
+    assert store.get_rep_roster() == roster
+
+
+def test_get_rep_roster_empty_returns_empty_dict(store):
+    assert store.get_rep_roster() == {}
