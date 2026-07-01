@@ -136,3 +136,52 @@ def test_compute_metrics_and_recent_end_to_end():
     assert metrics["119"]["outboundToday"] == 1
     assert metrics["121"]["inboundToday"] == 1
     assert [r["sessionId"] for r in recent] == ["s1", "s2", "s9"]  # newest first
+
+
+def test_build_recent_calls_dedup_prefers_connected_when_seen_first():
+    # Mirror of the dedup test but with the CONNECTED instance iterated FIRST,
+    # so the _result_rank tie-break (not iteration order) is what wins.
+    per_ext = {
+        "121": [_voice("s2", "Inbound", "Accepted", "2026-07-01T17:00:00.000Z", "+1206")],
+        "119": [_voice("s2", "Inbound", "Answered Elsewhere", "2026-07-01T17:00:00.000Z", "+1206")],
+    }
+    roster = {"119": {"name": "Doug"}, "121": {"name": "Travis"}}
+    rows = build_recent_calls(per_ext, roster)
+    assert len(rows) == 1
+    assert rows[0]["result"] == "Accepted"
+    assert rows[0]["repName"] == "Travis"
+
+
+def test_build_recent_calls_excludes_non_voice():
+    per_ext = {"119": [
+        {"type": "Fax", "telephonySessionId": "f1", "direction": "Inbound",
+         "result": "Accepted", "startTime": "2026-07-01T19:00:00.000Z",
+         "from": {"phoneNumber": "+1"}},
+        _voice("s1", "Outbound", "Call connected", "2026-07-01T18:00:00.000Z", "+2"),
+    ]}
+    rows = build_recent_calls(per_ext, {"119": {"name": "Doug"}})
+    assert [r["sessionId"] for r in rows] == ["s1"]
+
+
+def test_fetch_ext_call_log_paginates_until_short_page():
+    from src.rc_metrics import fetch_ext_call_log
+    pages = {1: [{"id": i} for i in range(250)], 2: [{"id": 250}]}
+
+    class _PagedPlatform:
+        def __init__(self):
+            self.pages_requested = []
+
+        def get(self, path, params=None):
+            page = params["page"]
+            self.pages_requested.append(page)
+            recs = pages.get(page, [])
+
+            class _Resp:
+                def json_dict(_self):
+                    return {"records": recs, "paging": {}}
+            return _Resp()
+
+    p = _PagedPlatform()
+    recs = fetch_ext_call_log(p, "119", "2026-06-29T07:00:00Z")
+    assert len(recs) == 251
+    assert p.pages_requested == [1, 2]   # stopped after the short second page
