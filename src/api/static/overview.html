@@ -18,6 +18,8 @@
     h1 { margin: 0; font-size: 18px; font-weight: 600; }
     #status { font-size: 12px; color: var(--muted); }
     main { max-width: 720px; margin: 0 auto; padding: 16px; }
+    h2.section { font-size: 12px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: 0.08em; margin: 24px 0 10px; }
     a.rep { display: flex; align-items: center; gap: 12px; text-decoration: none;
             color: var(--text); background: var(--panel);
             border: 1px solid var(--border); border-radius: 8px;
@@ -28,10 +30,20 @@
     .dot.on { background: var(--green); }
     .name { font-size: 15px; font-weight: 600; }
     .ext { font-size: 12px; color: var(--muted); }
+    .metrics { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .meta { margin-left: auto; text-align: right; font-size: 12px;
             color: var(--muted); }
     .meta .live { color: var(--green); font-weight: 600; }
-    .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+    .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+    table.recent { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.recent td { padding: 8px 10px; border-bottom: 1px solid var(--border);
+                      white-space: nowrap; }
+    table.recent td.num { color: var(--muted); font-variant-numeric: tabular-nums; }
+    table.recent tr.missed td { color: var(--muted); }
+    .badge { font-size: 11px; padding: 1px 6px; border-radius: 3px;
+             border: 1px solid var(--border); }
+    .badge.miss { color: var(--red); border-color: var(--red); }
+    .dir { font-weight: 600; }
   </style>
 </head>
 <body>
@@ -39,7 +51,11 @@
     <h1>SFW Call Bridge — Reps</h1>
     <div id="status">Loading…</div>
   </header>
-  <main id="list"><div class="empty">Loading…</div></main>
+  <main>
+    <div id="list"><div class="empty">Loading…</div></div>
+    <h2 class="section">Recent calls</h2>
+    <div id="recent"><div class="empty">Loading…</div></div>
+  </main>
 
   <script>
     let apiKey = localStorage.getItem("sfw-bridge-key");
@@ -47,13 +63,27 @@
       apiKey = prompt("Enter your SFW Bridge API key (x-api-key):") || "";
       if (apiKey) localStorage.setItem("sfw-bridge-key", apiKey);
     }
+    const authHeaders = { "x-api-key": apiKey };
 
     function esc(s) {
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                       .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    function render(reps) {
+    function fmtMetrics(m) {
+      if (!m) return "—";
+      return `in ${m.inboundToday}·${m.inboundWeek} · out ${m.outboundToday}·${m.outboundWeek}`;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "";
+      try {
+        return new Date(iso).toLocaleTimeString("en-US", {
+          timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" });
+      } catch { return iso; }
+    }
+
+    function renderReps(reps) {
       const list = document.getElementById("list");
       if (!reps.length) {
         list.innerHTML = '<div class="empty">Waiting for roster…</div>';
@@ -68,18 +98,40 @@
         return `<a class="rep" href="/dashboard?rep=${encodeURIComponent(r.extId)}">
           <span class="dot ${on ? "on" : ""}"></span>
           <span><span class="name">${esc(r.name)}</span>
-            <span class="ext">ext ${esc(r.number || r.extId)}</span></span>
+            <span class="ext">ext ${esc(r.number || r.extId)}</span>
+            <div class="metrics">${esc(fmtMetrics(r.metrics))}</div></span>
           <span class="meta">${meta}</span>
         </a>`;
       }).join("");
     }
 
+    function renderRecent(calls) {
+      const box = document.getElementById("recent");
+      if (!calls.length) {
+        box.innerHTML = '<div class="empty">No recent calls</div>';
+        return;
+      }
+      box.innerHTML = '<table class="recent"><tbody>' + calls.map(c => {
+        const arrow = c.direction === "Outbound" ? "→" : "←";
+        const badge = c.connected
+          ? `<span class="badge">${esc(c.result || "")}</span>`
+          : `<span class="badge miss">${esc(c.result || "missed")}</span>`;
+        return `<tr class="${c.connected ? "" : "missed"}">
+          <td class="num">${esc(fmtTime(c.startTime))}</td>
+          <td>${esc(c.repName || "")}</td>
+          <td class="dir">${arrow}</td>
+          <td class="num">${esc(c.otherNumber || "")}</td>
+          <td>${badge}</td>
+        </tr>`;
+      }).join("") + '</tbody></table>';
+    }
+
     async function poll() {
       try {
-        const r = await fetch("/api/calls/reps", { headers: { "x-api-key": apiKey } });
+        const r = await fetch("/api/calls/reps", { headers: authHeaders });
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
         const data = await r.json();
-        render(data.reps || []);
+        renderReps(data.reps || []);
         const active = (data.reps || []).filter(x => x.onCall).length;
         document.getElementById("status").textContent =
           `${(data.reps || []).length} reps • ${active} on call`;
@@ -88,8 +140,19 @@
       }
     }
 
+    async function pollRecent() {
+      try {
+        const r = await fetch("/api/calls/recent", { headers: authHeaders });
+        if (!r.ok) return;
+        const data = await r.json();
+        renderRecent(data.calls || []);
+      } catch (_) { /* keep last render */ }
+    }
+
     setInterval(poll, 3000);
+    setInterval(pollRecent, 5000);
     poll();
+    pollRecent();
   </script>
 </body>
 </html>
