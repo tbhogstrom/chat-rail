@@ -7,6 +7,7 @@ from src.agreement_tool.routes import agreement_router
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_OVERVIEW_HTML = _STATIC_DIR / "overview.html"
 _AGREEMENT_HTML = Path(__file__).parent.parent / "agreement_tool" / "static" / "agreement.html"
 
 
@@ -19,6 +20,10 @@ def create_app(store: CallStore | None = None) -> FastAPI:
     app.include_router(router)
     app.include_router(hubspot_router)
     app.include_router(agreement_router)
+
+    @app.get("/")
+    def overview() -> FileResponse:
+        return FileResponse(_OVERVIEW_HTML)
 
     @app.get("/dashboard")
     def dashboard() -> FileResponse:

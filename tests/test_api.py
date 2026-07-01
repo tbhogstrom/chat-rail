@@ -301,3 +301,9 @@ def test_get_reps_outbound_uses_to_number(client, store):
     doug = resp.json()["reps"][0]
     assert doug["onCall"] is True
     assert doug["callerNumber"] == "+15129990000"
+
+
+def test_root_serves_overview_page(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
