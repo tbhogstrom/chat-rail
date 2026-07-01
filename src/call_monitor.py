@@ -24,9 +24,12 @@ def process_telephony_event(event: dict, store: CallStore,
     queue/IVR-routed calls put the actual rep beyond index 0.
     """
     body = event.get("body", {})
-    session_id = body.get("telephonySessionId")
+    # RC's WS notifications carry the session id as `telephonySessionId`, but
+    # the REST snapshot (GET /telephony/sessions/{sid}) returns it as `id`.
+    # Accept either so snapshot-hydrated calls aren't silently dropped.
+    session_id = body.get("telephonySessionId") or body.get("id")
     if not session_id:
-        logger.warning("Event missing telephonySessionId: %s", event)
+        logger.warning("Event missing session id: %s", event)
         return
 
     parties = body.get("parties", [])

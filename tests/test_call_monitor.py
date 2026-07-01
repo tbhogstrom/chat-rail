@@ -58,6 +58,29 @@ def test_disconnected_call_completed(store, fake_redis):
     assert call["status"] == "Disconnected"
 
 
+def test_snapshot_shape_with_id_key_stored(store):
+    """REST GET /telephony/sessions/{sid} returns the session id as `id`,
+    not `telephonySessionId`. The hydration path must accept it."""
+    event = {
+        "body": {
+            "id": "s-snap",
+            "parties": [
+                {
+                    "direction": "Inbound",
+                    "status": {"code": "Answered"},
+                    "from": {"phoneNumber": "+12065551234", "name": "John Doe"},
+                    "to": {"phoneNumber": "+12065559999", "extensionId": "119", "name": "Doug Stoker"},
+                }
+            ],
+        }
+    }
+    process_telephony_event(event, store)
+
+    call = store.get_call("s-snap")
+    assert call is not None
+    assert call["status"] == "Answered"
+
+
 def test_proceeding_call_stored_as_ringing(store):
     event = make_event("s-100", "Proceeding")
     process_telephony_event(event, store)
