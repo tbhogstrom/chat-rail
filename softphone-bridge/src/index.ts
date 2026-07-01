@@ -9,6 +9,16 @@ import { buildServer } from "./server.js";
 const Softphone = (SoftphoneDefault as unknown as { default?: typeof SoftphoneDefault })
   .default ?? SoftphoneDefault;
 
+// A single misbehaving call leg (e.g. a DTMF send on a torn-down *80 socket)
+// must never take down the whole supervisor and kill transcription for every
+// other call. Log and stay alive instead of letting Node exit.
+process.on("unhandledRejection", (reason) => {
+  console.error("[bridge] unhandledRejection (kept alive):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[bridge] uncaughtException (kept alive):", err);
+});
+
 const softphone = new Softphone({
   domain: config.sip.domain,
   outboundProxy: config.sip.outboundProxy,

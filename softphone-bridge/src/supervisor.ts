@@ -36,6 +36,30 @@ function isIvrFailure(text: string): boolean {
   return IVR_FAIL_PHRASES.some((p) => lower.includes(p));
 }
 
+/**
+ * Send the monitoring DTMF (`<ext>#`) on the *80 leg, safely.
+ *
+ * The *80 leg can be disposed during the post-answer delay (RC caps *80
+ * duration, or the source call ends). Sending DTMF on a torn-down UDP socket
+ * throws ERR_SOCKET_DGRAM_NOT_RUNNING; because it runs inside an un-awaited
+ * event listener, an unhandled rejection would crash the whole bridge and
+ * kill live transcription for every subsequent call. This never throws:
+ * returns true if sent, false if skipped (no longer active) or the send failed.
+ */
+export async function sendMonitorDtmf(
+  call: { sendDTMFs: (dtmf: string, intervalMs: number) => Promise<void> },
+  dtmf: string,
+  isActive: () => boolean,
+): Promise<boolean> {
+  if (!isActive()) return false;
+  try {
+    await call.sendDTMFs(dtmf, 500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function superviseCall(
   softphone: Softphone,
   sessionId: string,
@@ -92,8 +116,18 @@ export async function superviseCall(
 
     call.once("answered", async () => {
       await new Promise((r) => setTimeout(r, 5000));
-      await call.sendDTMFs(`${agentExtNumber}#`, 500);
-      console.log(`[sup:${sessionId}] monitoring active (attempt ${attempt})`);
+      // Only send if THIS attempt is still the live one — the *80 leg may have
+      // been disposed (or superseded by a retry) during the 5s wait.
+      const sent = await sendMonitorDtmf(
+        call,
+        `${agentExtNumber}#`,
+        () => state === "running" && current?.call === call,
+      );
+      console.log(
+        sent
+          ? `[sup:${sessionId}] monitoring active (attempt ${attempt})`
+          : `[sup:${sessionId}] monitoring DTMF skipped — *80 leg gone (attempt ${attempt})`,
+      );
     });
 
     let audioPackets = 0;
