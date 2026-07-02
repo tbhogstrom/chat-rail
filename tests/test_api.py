@@ -408,3 +408,23 @@ def test_get_ui_config_returns_configured_url(client):
 @patch("src.api.auth.Config.API_KEY", API_KEY)
 def test_get_ui_config_requires_auth(client):
     assert client.get("/api/calls/config").status_code == 401
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_session_cookie_authorizes_api_without_key(client):
+    from src.api.session import make_token
+    client.cookies.set("sfw_session", make_token("sellit"))
+    r = client.get("/api/calls/active")   # no x-api-key header
+    assert r.status_code == 200
+    client.cookies.clear()
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_bad_cookie_and_no_key_rejected(client):
+    from src.api.session import make_token
+    client.cookies.set("sfw_session", make_token("wrong"))
+    r = client.get("/api/calls/active")
+    assert r.status_code == 401
+    client.cookies.clear()
