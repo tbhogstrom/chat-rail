@@ -153,11 +153,7 @@
         "Missing ?rep=<extension_id> in the URL.";
       throw new Error("missing rep");
     }
-    let apiKey = localStorage.getItem("sfw-bridge-key");
-    if (!apiKey) {
-      apiKey = prompt("Enter your SFW Bridge API key (x-api-key):") || "";
-      if (apiKey) localStorage.setItem("sfw-bridge-key", apiKey);
-    }
+    // Auth is the shared-password session cookie (sent automatically, same-origin).
 
     let currentSid = null;
     let lastContactId = null;
@@ -235,7 +231,7 @@
     }
 
     function authHeaders(extra = {}) {
-      return { "x-api-key": apiKey, "content-type": "application/json", ...extra };
+      return { "content-type": "application/json", ...extra };
     }
 
     function toast(msg, isError = false) {

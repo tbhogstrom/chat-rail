@@ -100,12 +100,7 @@
 <div id="toast"></div>
 
 <script>
-const KEY_NAME = "sfw-bridge-key";
-function apiKey() {
-  let k = localStorage.getItem(KEY_NAME);
-  if (!k) { k = prompt("Enter API key"); if (k) localStorage.setItem(KEY_NAME, k); }
-  return k;
-}
+// Auth is the shared-password session cookie (sent automatically, same-origin).
 function toast(msg, ok=false) {
   const t = document.getElementById("toast");
   t.textContent = msg; t.style.borderColor = ok ? "var(--ok)" : "var(--line)";
@@ -114,7 +109,7 @@ function toast(msg, ok=false) {
 async function api(path, body) {
   const r = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": apiKey() },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const text = await r.text();

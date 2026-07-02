@@ -58,12 +58,8 @@
   </main>
 
   <script>
-    let apiKey = localStorage.getItem("sfw-bridge-key");
-    if (!apiKey) {
-      apiKey = prompt("Enter your SFW Bridge API key (x-api-key):") || "";
-      if (apiKey) localStorage.setItem("sfw-bridge-key", apiKey);
-    }
-    const authHeaders = { "x-api-key": apiKey };
+    // Auth is the shared-password session cookie (sent automatically, same-origin).
+    const authHeaders = {};
 
     function esc(s) {
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
