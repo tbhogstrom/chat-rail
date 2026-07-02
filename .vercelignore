@@ -1,0 +1,22 @@
+# Keep the Vercel Python function slim: it serves the FastAPI web app only.
+# Hiding pyproject.toml forces the builder to use the slim requirements.txt
+# (fastapi, upstash-redis, httpx, python-dotenv) instead of the full engine deps
+# (ringcentral, uvicorn, websockets, ...) which blow past the 225MB limit.
+pyproject.toml
+
+# Engine / bridge / tooling — not part of the web function.
+softphone-bridge
+docs
+tests
+scripts
+Dockerfile.engine
+requirements-engine.txt
+run_local.py
+run_engine.py
+run_monitor.py
+rc_data_dump.py
+rc_poll_test.py
+rc_test.py
+rc_transcript_probe.py
+rc_websocket_test.py
+rc_ws_debug.py
