@@ -32,7 +32,7 @@ await softphone.register();
 console.log("[bridge] softphone registered");
 
 const server = buildServer(softphone);
-await server.listen({ host: "0.0.0.0", port: config.bridge.port });
+await server.listen({ host: config.bridge.host, port: config.bridge.port });
 console.log(`[bridge] HTTP listening on :${config.bridge.port}`);
 
 async function shutdown() {

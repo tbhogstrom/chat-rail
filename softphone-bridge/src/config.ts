@@ -20,6 +20,9 @@ export const config = {
     token: required("KV_REST_API_TOKEN"),
   },
   bridge: {
+    // Default to IPv6 any-addr so Fly private networking (.internal, IPv6-only)
+    // can reach us; "::" dual-stacks and also accepts IPv4.
+    host: process.env.BRIDGE_HOST || "::",
     port: Number(process.env.BRIDGE_PORT || 8787),
     apiKey: required("BRIDGE_API_KEY"),
   },

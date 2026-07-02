@@ -1,0 +1,12 @@
+app = "sfw-softphone-bridge"
+primary_region = "sea"
+
+[build]
+
+[env]
+  BRIDGE_PORT = "8787"
+  BRIDGE_HOST = "::"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
