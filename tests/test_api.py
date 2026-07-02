@@ -388,3 +388,23 @@ def test_get_reps_ended_call_reads_idle(client, store):
     assert rep["onCall"] is False
     assert rep["status"] is None
     assert rep["callerNumber"] is None
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_ui_config_returns_default_url(client):
+    r = client.get("/api/calls/config", headers=auth_header())
+    assert r.status_code == 200
+    assert r.json()["salesScriptClaudeUrl"].startswith("https://claude.ai/project/")
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.SALES_SCRIPT_CLAUDE_URL",
+       "https://claude.ai/project/override-123")
+def test_get_ui_config_returns_configured_url(client):
+    r = client.get("/api/calls/config", headers=auth_header())
+    assert r.json() == {"salesScriptClaudeUrl": "https://claude.ai/project/override-123"}
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_ui_config_requires_auth(client):
+    assert client.get("/api/calls/config").status_code == 401

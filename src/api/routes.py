@@ -106,6 +106,11 @@ def get_recent_calls():
     return {"calls": store.get_recent_calls()}
 
 
+@router.get("/config")
+def get_ui_config():
+    return {"salesScriptClaudeUrl": Config.SALES_SCRIPT_CLAUDE_URL}
+
+
 @router.get("/latest")
 def get_latest_call(rep: str | None = None):
     store = get_store()

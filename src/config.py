@@ -60,3 +60,7 @@ class Config:
 
     # Timezone for metrics day/week boundaries (IANA name). Week starts Monday.
     METRICS_TIMEZONE: str = os.environ.get("METRICS_TIMEZONE") or "America/Los_Angeles"
+
+    # Claude project the dashboard "Open in Sales Script Claude" button opens.
+    SALES_SCRIPT_CLAUDE_URL: str = os.environ.get("SALES_SCRIPT_CLAUDE_URL") \
+        or "https://claude.ai/project/019eaedf-52bd-775e-a012-0fb929726061"
