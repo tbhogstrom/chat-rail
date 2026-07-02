@@ -428,3 +428,46 @@ def test_bad_cookie_and_no_key_rejected(client):
     r = client.get("/api/calls/active")
     assert r.status_code == 401
     client.cookies.clear()
+
+
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_page_without_cookie_redirects_to_login(client):
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login?next=/"
+
+
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_login_wrong_password_returns_401(client):
+    r = client.post("/login", data={"password": "nope"}, follow_redirects=False)
+    assert r.status_code == 401
+
+
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_login_sets_cookie_and_redirects(client):
+    r = client.post("/login", data={"password": "sellit", "next": "/dashboard"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/dashboard"
+    assert "sfw_session=" in r.headers.get("set-cookie", "")
+
+
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_login_open_redirect_blocked(client):
+    r = client.post("/login", data={"password": "sellit", "next": "//evil.com"},
+                    follow_redirects=False)
+    assert r.headers["location"] == "/"
+
+
+@patch("src.config.Config.APP_PASSWORD", "sellit")
+def test_page_with_valid_cookie_ok(client):
+    from src.api.session import make_token
+    client.cookies.set("sfw_session", make_token("sellit"))
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 200
+    client.cookies.clear()
+
+
+def test_gate_disabled_when_password_empty(client):
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 200
