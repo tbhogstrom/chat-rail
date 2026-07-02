@@ -65,5 +65,9 @@ class Config:
     SALES_SCRIPT_CLAUDE_URL: str = os.environ.get("SALES_SCRIPT_CLAUDE_URL") \
         or "https://claude.ai/project/019eaedf-52bd-775e-a012-0fb929726061"
 
+    # Claude project the dashboard "Open in Service Agreement Generator" button opens.
+    SERVICE_AGREEMENT_CLAUDE_URL: str = os.environ.get("SERVICE_AGREEMENT_CLAUDE_URL") \
+        or "https://claude.ai/project/019eb27a-006c-7101-8f28-2a205e8c9fee"
+
     # Shared password gating the web app. Empty = gate disabled.
     APP_PASSWORD: str = os.environ.get("APP_PASSWORD") or ""

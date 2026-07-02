@@ -139,6 +139,7 @@
         <hr />
         <button id="copy" class="secondary">📋 Copy Transcript</button>
         <button id="open-claude" class="secondary">🧠 Open in Sales Script Claude</button>
+        <button id="open-service-agreement" class="secondary">📄 Open in Service Agreement Generator</button>
       </div>
     </section>
   </main>
@@ -390,33 +391,42 @@
       }
     });
 
-    // ---- Open in Sales Script Claude ----
-    let salesScriptUrl = null;
+    // ---- Open in Claude project buttons (Sales Script + Service Agreement) ----
+    let salesScriptUrl = null, serviceAgreementUrl = null;
     (async function loadUiConfig() {
       try {
         const r = await fetch("/api/calls/config", { headers: authHeaders() });
-        if (r.ok) salesScriptUrl = (await r.json()).salesScriptClaudeUrl;
-      } catch (_) { /* button will report if URL missing */ }
+        if (r.ok) {
+          const c = await r.json();
+          salesScriptUrl = c.salesScriptClaudeUrl;
+          serviceAgreementUrl = c.serviceAgreementClaudeUrl;
+        }
+      } catch (_) { /* buttons will report if URL missing */ }
     })();
 
-    document.getElementById("open-claude").addEventListener("click", async () => {
+    async function openInClaude(url) {
       const txt = document.getElementById("transcript-body").textContent.trim();
       if (!txt || txt === "Waiting for transcript…") {
         return toast("No transcript yet", true);
       }
-      if (!salesScriptUrl) {
-        return toast("Sales Script URL not loaded yet — try again in a moment", true);
+      if (!url) {
+        return toast("Claude URL not loaded yet — try again in a moment", true);
       }
       try {
         await navigator.clipboard.writeText(txt);
-        window.open(salesScriptUrl, "_blank");
+        window.open(url, "_blank");
         toast("Transcript copied — paste into Claude (Ctrl/Cmd+V)");
       } catch (e) {
         // Clipboard blocked — still open Claude so the rep can copy manually.
-        window.open(salesScriptUrl, "_blank");
+        window.open(url, "_blank");
         toast("Opened Claude — copy the transcript manually (clipboard blocked)", true);
       }
-    });
+    }
+
+    document.getElementById("open-claude")
+      .addEventListener("click", () => openInClaude(salesScriptUrl));
+    document.getElementById("open-service-agreement")
+      .addEventListener("click", () => openInClaude(serviceAgreementUrl));
   </script>
 </body>
 </html>

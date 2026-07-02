@@ -402,7 +402,7 @@ def test_get_ui_config_returns_default_url(client):
        "https://claude.ai/project/override-123")
 def test_get_ui_config_returns_configured_url(client):
     r = client.get("/api/calls/config", headers=auth_header())
-    assert r.json() == {"salesScriptClaudeUrl": "https://claude.ai/project/override-123"}
+    assert r.json()["salesScriptClaudeUrl"] == "https://claude.ai/project/override-123"
 
 
 @patch("src.api.auth.Config.API_KEY", API_KEY)
@@ -471,3 +471,13 @@ def test_page_with_valid_cookie_ok(client):
 def test_gate_disabled_when_password_empty(client):
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 200
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_ui_config_includes_service_agreement_url(client):
+    r = client.get("/api/calls/config", headers=auth_header())
+    assert r.status_code == 200
+    body = r.json()
+    assert body["salesScriptClaudeUrl"].startswith("https://claude.ai/project/")
+    assert body["serviceAgreementClaudeUrl"] == \
+        "https://claude.ai/project/019eb27a-006c-7101-8f28-2a205e8c9fee"

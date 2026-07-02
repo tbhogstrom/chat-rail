@@ -108,7 +108,10 @@ def get_recent_calls():
 
 @router.get("/config")
 def get_ui_config():
-    return {"salesScriptClaudeUrl": Config.SALES_SCRIPT_CLAUDE_URL}
+    return {
+        "salesScriptClaudeUrl": Config.SALES_SCRIPT_CLAUDE_URL,
+        "serviceAgreementClaudeUrl": Config.SERVICE_AGREEMENT_CLAUDE_URL,
+    }
 
 
 @router.get("/latest")
