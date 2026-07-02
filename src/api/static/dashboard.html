@@ -138,6 +138,7 @@
         <button id="deal" disabled>💼 Create Deal</button>
         <hr />
         <button id="copy" class="secondary">📋 Copy Transcript</button>
+        <button id="open-claude" class="secondary">🧠 Open in Sales Script Claude</button>
       </div>
     </section>
   </main>
@@ -390,6 +391,34 @@
         toast("Transcript copied to clipboard");
       } catch (e) {
         toast(`Copy failed: ${e.message}`, true);
+      }
+    });
+
+    // ---- Open in Sales Script Claude ----
+    let salesScriptUrl = null;
+    (async function loadUiConfig() {
+      try {
+        const r = await fetch("/api/calls/config", { headers: authHeaders() });
+        if (r.ok) salesScriptUrl = (await r.json()).salesScriptClaudeUrl;
+      } catch (_) { /* button will report if URL missing */ }
+    })();
+
+    document.getElementById("open-claude").addEventListener("click", async () => {
+      const txt = document.getElementById("transcript-body").textContent.trim();
+      if (!txt || txt === "Waiting for transcript…") {
+        return toast("No transcript yet", true);
+      }
+      if (!salesScriptUrl) {
+        return toast("Sales Script URL not loaded yet — try again in a moment", true);
+      }
+      try {
+        await navigator.clipboard.writeText(txt);
+        window.open(salesScriptUrl, "_blank");
+        toast("Transcript copied — paste into Claude (Ctrl/Cmd+V)");
+      } catch (e) {
+        // Clipboard blocked — still open Claude so the rep can copy manually.
+        window.open(salesScriptUrl, "_blank");
+        toast("Opened Claude — copy the transcript manually (clipboard blocked)", true);
       }
     });
   </script>
