@@ -7,7 +7,8 @@ def test_metrics_timezone_default_is_valid_iana():
     ZoneInfo(Config.METRICS_TIMEZONE)  # must not raise
 
 
-def test_sales_script_claude_url_default():
-    from src.config import Config
-    assert Config.SALES_SCRIPT_CLAUDE_URL == \
-        "https://claude.ai/project/019eaedf-52bd-775e-a012-0fb929726061"
+def test_claude_tools_are_configured():
+    tools = Config.CLAUDE_TOOLS
+    assert len(tools) >= 7
+    assert all("label" in t and "url" in t for t in tools)
+    assert all(t["url"].startswith("https://claude.ai/project/") for t in tools)

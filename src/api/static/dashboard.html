@@ -37,6 +37,7 @@
                    color: var(--text); padding: 6px 8px; border-radius: 4px;
                    font-size: 13px; font-family: inherit; }
     .actions { margin-top: 20px; display: flex; flex-direction: column; gap: 8px; }
+    #claude-tools { display: flex; flex-direction: column; gap: 8px; }
     button { background: var(--accent); color: #0a0f1f; border: none;
              padding: 10px 12px; border-radius: 6px; font-size: 13px;
              font-weight: 600; cursor: pointer; text-align: left; }
@@ -138,8 +139,7 @@
         <button id="deal" disabled>💼 Create Deal</button>
         <hr />
         <button id="copy" class="secondary">📋 Copy Transcript</button>
-        <button id="open-claude" class="secondary">🧠 Open in Sales Script Claude</button>
-        <button id="open-service-agreement" class="secondary">📄 Open in Service Agreement Generator</button>
+        <div id="claude-tools"></div>
       </div>
     </section>
   </main>
@@ -391,19 +391,7 @@
       }
     });
 
-    // ---- Open in Claude project buttons (Sales Script + Service Agreement) ----
-    let salesScriptUrl = null, serviceAgreementUrl = null;
-    (async function loadUiConfig() {
-      try {
-        const r = await fetch("/api/calls/config", { headers: authHeaders() });
-        if (r.ok) {
-          const c = await r.json();
-          salesScriptUrl = c.salesScriptClaudeUrl;
-          serviceAgreementUrl = c.serviceAgreementClaudeUrl;
-        }
-      } catch (_) { /* buttons will report if URL missing */ }
-    })();
-
+    // ---- Claude project buttons (rendered from /api/calls/config) ----
     async function openInClaude(url) {
       const txt = document.getElementById("transcript-body").textContent.trim();
       if (!txt || txt === "Waiting for transcript…") {
@@ -423,10 +411,22 @@
       }
     }
 
-    document.getElementById("open-claude")
-      .addEventListener("click", () => openInClaude(salesScriptUrl));
-    document.getElementById("open-service-agreement")
-      .addEventListener("click", () => openInClaude(serviceAgreementUrl));
+    (async function loadClaudeTools() {
+      let tools = [];
+      try {
+        const r = await fetch("/api/calls/config", { headers: authHeaders() });
+        if (r.ok) tools = (await r.json()).claudeTools || [];
+      } catch (_) { /* leave empty */ }
+      const box = document.getElementById("claude-tools");
+      box.innerHTML = "";
+      for (const t of tools) {
+        const b = document.createElement("button");
+        b.className = "secondary";
+        b.textContent = t.label;
+        b.addEventListener("click", () => openInClaude(t.url));
+        box.appendChild(b);
+      }
+    })();
   </script>
 </body>
 </html>
