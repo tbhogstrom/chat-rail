@@ -4,6 +4,13 @@
 # (ringcentral, uvicorn, websockets, ...) which blow past the 225MB limit.
 pyproject.toml
 
+# Local-only dirs that must never be bundled into the function.
+.worktrees
+.claude
+.superpowers
+.pytest_cache
+__pycache__
+
 # Engine / bridge / tooling — not part of the web function.
 softphone-bridge
 docs
