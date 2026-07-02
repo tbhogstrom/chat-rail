@@ -2,4 +2,5 @@ fastapi>=0.115
 upstash-redis>=1.1
 httpx>=0.28
 python-dotenv>=1.0
+python-multipart>=0.0.9
 tzdata>=2025.1
