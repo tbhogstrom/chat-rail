@@ -1,0 +1,9 @@
+app = "sfw-engine"
+primary_region = "sea"
+
+[build]
+  dockerfile = "Dockerfile.engine"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

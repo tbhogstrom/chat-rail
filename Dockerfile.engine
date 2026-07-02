@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements-engine.txt .
+RUN pip install --no-cache-dir -r requirements-engine.txt
+COPY src ./src
+COPY run_engine.py .
+CMD ["python", "run_engine.py"]
