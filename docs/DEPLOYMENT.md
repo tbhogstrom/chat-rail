@@ -59,6 +59,9 @@ Design/plan detail: `docs/superpowers/specs|plans/2026-07-02-production-deployme
 - `.env` KV values are **double-quoted**; strip surrounding quotes before `vercel env add` (else the
   Upstash URL loses its `https://` and every Redis call 500s).
 - Fly private networking (`.internal`) is **IPv6-only** → the bridge listens on `::` (`BRIDGE_HOST`).
+- `fly scale count 1` on a 2-machine app (active + standby) can destroy the **active** machine and
+  keep the **standby**, which stays stopped by design → app silently down. Check `fly status` after
+  scaling; fix with `fly machine update <id> --standby-for "" -y` then `fly machine start <id>`.
 
 ## Deploy topology
 
