@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "checkpoints": [
+    {"id": "caller-name", "label": "Name", "points": 10,
+     "detect": {"type": "extracted_field", "field": "firstname"}},
+    {"id": "phone", "label": "Phone", "points": 15,
+     "detect": {"type": "extracted_field", "field": "phone"}},
+    {"id": "email", "label": "Email", "points": 15,
+     "detect": {"type": "extracted_field", "field": "email"}},
+    {"id": "sales-script", "label": "Sales Script", "points": 25,
+     "detect": {"type": "event", "event": "sales-script-opened"}},
+    {"id": "agreement", "label": "Agreement", "points": 35,
+     "detect": {"type": "event", "event": "agreement-opened"}}
+  ]
+}
