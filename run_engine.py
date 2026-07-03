@@ -12,6 +12,7 @@ from src.config import Config
 from src.extraction_worker import run_extraction_worker
 from src.metrics_worker import run_metrics_worker
 from src.redis_store import CallStore
+from src.sellometer_worker import run_sellometer_worker
 from src.sidecar_client import SidecarClient
 
 logging.basicConfig(
@@ -47,6 +48,7 @@ async def main():
     await asyncio.gather(
         run_monitor(store, sidecar=sidecar),
         run_extraction_worker(store),
+        run_sellometer_worker(store),
         run_metrics_worker(store),
     )
 
