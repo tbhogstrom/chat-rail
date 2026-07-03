@@ -64,8 +64,10 @@ class Config:
     # Claude project buttons on the dashboard. Add a tool = add one entry here.
     CLAUDE_TOOLS: list[dict] = [
         {"label": "🧠 Sales Script Claude",
+         "event": "sales-script-opened",
          "url": "https://claude.ai/project/019eaedf-52bd-775e-a012-0fb929726061"},
         {"label": "📄 Service Agreement Generator",
+         "event": "agreement-opened",
          "url": "https://claude.ai/project/019eb27a-006c-7101-8f28-2a205e8c9fee"},
         {"label": "🔄 Cancellation Recovery",
          "url": "https://claude.ai/project/019f1ff1-02b7-72bd-a18b-97d6ab294876"},
