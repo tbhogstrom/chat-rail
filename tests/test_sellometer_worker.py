@@ -86,11 +86,11 @@ def test_cycle_refreshes_events_ttl(store, fake_redis):
     checkpoint clicked early in a >1h call could expire mid-call."""
     _start_call(store)
     store.add_call_event("s-1", "sales-script-opened", _t(0).isoformat())
-    tracked = set()
-    run_sellometer_cycle(store, tracked, now=_t(0))
-    assert fake_redis.ttl("call:s-1:events") > 0
-    run_sellometer_cycle(store, tracked, now=_t(1))
-    assert fake_redis.ttl("call:s-1:events") > 0
+    # Simulate the key nearing the end of the TTL set at write time; the
+    # cycle must push it back out to a fresh 3600s, not leave it to expire.
+    fake_redis.expire("call:s-1:events", 5)
+    run_sellometer_cycle(store, set(), now=_t(1))
+    assert fake_redis.ttl("call:s-1:events") > 3000
 
 
 def test_finalize_prefers_monitored_active_ext(store, fake_redis):
