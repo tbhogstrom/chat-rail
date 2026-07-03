@@ -538,3 +538,10 @@ def test_get_sellometer_history(client, store):
     records = resp.json()["records"]
     assert len(records) == 1
     assert records[0]["sessionId"] == "s-2"
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_sellometer_history_limit_zero_rejected(client):
+    resp = client.get("/api/calls/reps/576959052/sellometer-history?limit=0",
+                      headers=auth_header())
+    assert resp.status_code == 422

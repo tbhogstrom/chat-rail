@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from src.config import Config
 from src.sellometer import (
     advance_timeline,
     compute_score,
@@ -30,6 +31,12 @@ def test_load_config_real_file_totals_100():
 
 def test_known_event_ids_only_event_checkpoints():
     assert known_event_ids(_config()) == {"email-entered"}
+
+
+def test_claude_tools_events_are_known_sellometer_events():
+    tool_events = {t["event"] for t in Config.CLAUDE_TOOLS if "event" in t}
+    assert tool_events, "expected at least one checkpoint-wired Claude tool"
+    assert tool_events <= known_event_ids(load_config())
 
 
 def test_compute_score_empty_inputs():

@@ -171,6 +171,11 @@ class CallStore:
         raw = self.redis.get(f"call:{session_id}:events")
         return json.loads(raw) if raw is not None else {}
 
+    def touch_call_events(self, session_id: str, ttl: int = 3600) -> None:
+        """Refresh the events key TTL. Call each cycle for live sessions so a
+        checkpoint clicked early in a long call doesn't expire mid-call."""
+        self.redis.expire(f"call:{session_id}:events", ttl)
+
     def set_sellometer(self, session_id: str, data: dict, ttl: int = 3600) -> None:
         """Persist the live sell-o-meter JSON for a session."""
         self.redis.set(f"call:{session_id}:sellometer", json.dumps(data))

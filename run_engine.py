@@ -44,7 +44,7 @@ async def main():
     logger.info("Live transcription %s",
                 "enabled via " + Config.SOFTPHONE_BRIDGE_URL if sidecar
                 else "disabled (no sidecar configured)")
-    logger.info("Engine starting: monitor + extraction + metrics")
+    logger.info("Engine starting: monitor + extraction + sellometer + metrics")
     await asyncio.gather(
         run_monitor(store, sidecar=sidecar),
         run_extraction_worker(store),

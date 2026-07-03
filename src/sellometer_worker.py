@@ -38,6 +38,7 @@ def run_sellometer_cycle(store: CallStore, tracked: set[str],
     current = set(store.list_active_sessions())
 
     for sid in current:
+        store.touch_call_events(sid)
         extracted = store.get_extracted(sid)
         events = store.get_call_events(sid)
         result = compute_score(config, extracted, events)

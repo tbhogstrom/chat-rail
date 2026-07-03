@@ -81,6 +81,18 @@ def test_cycle_finalizes_when_session_leaves_active_set(store, fake_redis):
     assert len(store.get_sellometer_history("576959052")) == 1
 
 
+def test_cycle_refreshes_events_ttl(store, fake_redis):
+    """A checkpoint event's TTL must be renewed each live cycle, or a
+    checkpoint clicked early in a >1h call could expire mid-call."""
+    _start_call(store)
+    store.add_call_event("s-1", "sales-script-opened", _t(0).isoformat())
+    tracked = set()
+    run_sellometer_cycle(store, tracked, now=_t(0))
+    assert fake_redis.ttl("call:s-1:events") > 0
+    run_sellometer_cycle(store, tracked, now=_t(1))
+    assert fake_redis.ttl("call:s-1:events") > 0
+
+
 def test_finalize_prefers_monitored_active_ext(store, fake_redis):
     with patch("src.sellometer_worker.Config") as MockConfig:
         MockConfig.MONITORED_EXTENSIONS = ["119"]

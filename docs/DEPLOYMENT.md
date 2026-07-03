@@ -60,6 +60,14 @@ Design/plan detail: `docs/superpowers/specs|plans/2026-07-02-production-deployme
   Upstash URL loses its `https://` and every Redis call 500s).
 - Fly private networking (`.internal`) is **IPv6-only** → the bridge listens on `::` (`BRIDGE_HOST`).
 
+## Deploy topology
+
+The engine (`sfw-engine`) must run **exactly one** Fly machine. Sell-o-meter finalization
+(`push_sellometer_final` in `src/redis_store.py`) uses a non-idempotent `LPUSH` — two machines
+processing the same cycles would each finalize and push, producing duplicate per-rep history
+records. Verify with `fly scale show -a sfw-engine` (config: `fly.engine.toml`) before and after
+every deploy.
+
 ## Known unverified
 
 **RTP audio from Fly** — the softphone *registers* from the cloud, but whether it streams call audio

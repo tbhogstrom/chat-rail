@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from src.redis_store import CallStore
 from src.api.auth import verify_api_key
 from src.api.models import CallEventReq, ContactLookupReq, ContactProps, ContactSearchReq, DealReq
@@ -185,9 +185,9 @@ def get_sellometer(session_id: str):
 
 
 @router.get("/reps/{ext_id}/sellometer-history")
-def get_sellometer_history(ext_id: str, limit: int = 50):
+def get_sellometer_history(ext_id: str, limit: int = Query(50, ge=1, le=500)):
     store = get_store()
-    return {"records": store.get_sellometer_history(ext_id, limit=min(limit, 500))}
+    return {"records": store.get_sellometer_history(ext_id, limit=limit)}
 
 
 @router.post("/{session_id}/scope-summary")
