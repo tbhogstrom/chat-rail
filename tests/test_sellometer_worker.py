@@ -81,6 +81,31 @@ def test_cycle_finalizes_when_session_leaves_active_set(store, fake_redis):
     assert len(store.get_sellometer_history("576959052")) == 1
 
 
+def test_finalization_is_idempotent_across_regrace(store, fake_redis):
+    """An engine restart re-processes a just-ended call's END event, which
+    re-opens its grace window and re-tracks it — that must NOT produce a
+    second history record. (Prod incident 2026-07-03: same session finalized
+    at 17:15 and again at 17:24 after a restart.)"""
+    _start_call(store)
+    store.set_extracted("s-1", {"firstname": "Jim"})
+    tracked = set()
+    run_sellometer_cycle(store, tracked, now=_t(0))
+    store.complete_call("s-1")
+    fake_redis.delete("call:s-1:extract-grace")
+    run_sellometer_cycle(store, tracked, now=_t(1))
+    assert len(store.get_sellometer_history("576959052")) == 1
+
+    # Engine restart: hydration re-completes the ended call → fresh grace →
+    # a fresh worker (empty tracked set) re-tracks it while graced.
+    store.complete_call("s-1")
+    tracked_after_restart = set()
+    run_sellometer_cycle(store, tracked_after_restart, now=_t(2))
+    fake_redis.delete("call:s-1:extract-grace")
+    run_sellometer_cycle(store, tracked_after_restart, now=_t(3))
+
+    assert len(store.get_sellometer_history("576959052")) == 1
+
+
 def test_cycle_refreshes_events_ttl(store, fake_redis):
     """A checkpoint event's TTL must be renewed each live cycle, or a
     checkpoint clicked early in a >1h call could expire mid-call."""

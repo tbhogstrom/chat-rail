@@ -58,6 +58,8 @@ def run_sellometer_cycle(store: CallStore, tracked: set[str],
         final = store.get_sellometer(sid)
         if final is None:
             continue  # never scored — nothing to record
+        if not store.try_mark_sellometer_finalized(sid):
+            continue  # already finalized (e.g. re-graced by a restart's hydration)
         ext_id = _rep_ext_id(store.get_call(sid) or {})
         if not ext_id:
             logger.warning("Sellometer final for %s has no rep ext id — dropped", sid)

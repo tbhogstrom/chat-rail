@@ -194,6 +194,18 @@ class CallStore:
         raw = self.redis.get(f"call:{session_id}:sellometer")
         return json.loads(raw) if raw is not None else None
 
+    def try_mark_sellometer_finalized(self, session_id: str,
+                                      ttl: int = 86400) -> bool:
+        """Atomically claim finalization for a session. True on first claim.
+
+        An engine restart re-processes a just-ended call's END event, which
+        re-opens its grace window and re-tracks the session in a fresh
+        worker — without this guard that pushes a duplicate history record
+        (LPUSH is not idempotent). SET NX makes exactly one claim win.
+        """
+        return bool(self.redis.set(f"call:{session_id}:sellometer-finalized",
+                                   "1", nx=True, ex=ttl))
+
     def push_sellometer_final(self, ext_id: str, record: dict,
                               keep: int = 500) -> None:
         """Prepend a final per-call sellometer record to the rep's history."""
