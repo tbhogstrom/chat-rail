@@ -182,3 +182,43 @@ def test_set_and_get_recent_calls(store):
 
 def test_get_recent_calls_empty_returns_empty_list(store):
     assert store.get_recent_calls() == []
+
+
+def test_call_events_roundtrip_and_idempotent(fake_redis):
+    store = CallStore(fake_redis)
+    assert store.get_call_events("s-1") == {}
+    store.add_call_event("s-1", "sales-script-opened", "2026-07-03T14:11:00+00:00")
+    store.add_call_event("s-1", "agreement-opened", "2026-07-03T14:12:00+00:00")
+    # Duplicate click: first timestamp wins.
+    store.add_call_event("s-1", "sales-script-opened", "2026-07-03T14:15:00+00:00")
+    assert store.get_call_events("s-1") == {
+        "sales-script-opened": "2026-07-03T14:11:00+00:00",
+        "agreement-opened": "2026-07-03T14:12:00+00:00",
+    }
+
+
+def test_sellometer_roundtrip(fake_redis):
+    store = CallStore(fake_redis)
+    assert store.get_sellometer("s-1") is None
+    data = {"score": 25, "max": 100, "checkpoints": [], "timeline": [0]}
+    store.set_sellometer("s-1", data)
+    assert store.get_sellometer("s-1") == data
+
+
+def test_sellometer_history_newest_first_and_trimmed(fake_redis):
+    store = CallStore(fake_redis)
+    assert store.get_sellometer_history("576959052") == []
+    store.push_sellometer_final("576959052", {"sessionId": "s-1", "score": 10})
+    store.push_sellometer_final("576959052", {"sessionId": "s-2", "score": 20})
+    records = store.get_sellometer_history("576959052")
+    assert [r["sessionId"] for r in records] == ["s-2", "s-1"]
+    # keep=1 trims to the newest record
+    store.push_sellometer_final("576959052", {"sessionId": "s-3", "score": 30}, keep=1)
+    assert [r["sessionId"] for r in store.get_sellometer_history("576959052")] == ["s-3"]
+
+
+def test_sellometer_history_limit(fake_redis):
+    store = CallStore(fake_redis)
+    for i in range(5):
+        store.push_sellometer_final("119", {"sessionId": f"s-{i}"})
+    assert len(store.get_sellometer_history("119", limit=2)) == 2

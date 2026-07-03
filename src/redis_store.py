@@ -149,3 +149,46 @@ class CallStore:
         """Return the recent-calls feed, or [] if not yet computed."""
         raw = self.redis.get("overview:recent")
         return json.loads(raw) if raw is not None else []
+
+    # ---- sell-o-meter ----
+
+    def add_call_event(self, session_id: str, event_id: str, ts: str,
+                       ttl: int = 3600) -> None:
+        """Record a checkpoint event for a call. Idempotent: first ts wins.
+
+        Stored as a single JSON object ({event_id: iso_ts}), not a hash, so
+        it round-trips identically on upstash-redis and fakeredis.
+        """
+        events = self.get_call_events(session_id)
+        if event_id in events:
+            return
+        events[event_id] = ts
+        self.redis.set(f"call:{session_id}:events", json.dumps(events))
+        self.redis.expire(f"call:{session_id}:events", ttl)
+
+    def get_call_events(self, session_id: str) -> dict:
+        """Return {event_id: iso_ts} for a call, or {} if none recorded."""
+        raw = self.redis.get(f"call:{session_id}:events")
+        return json.loads(raw) if raw is not None else {}
+
+    def set_sellometer(self, session_id: str, data: dict, ttl: int = 3600) -> None:
+        """Persist the live sell-o-meter JSON for a session."""
+        self.redis.set(f"call:{session_id}:sellometer", json.dumps(data))
+        self.redis.expire(f"call:{session_id}:sellometer", ttl)
+
+    def get_sellometer(self, session_id: str) -> dict | None:
+        """Return the live sell-o-meter JSON, or None if not computed yet."""
+        raw = self.redis.get(f"call:{session_id}:sellometer")
+        return json.loads(raw) if raw is not None else None
+
+    def push_sellometer_final(self, ext_id: str, record: dict,
+                              keep: int = 500) -> None:
+        """Prepend a final per-call sellometer record to the rep's history."""
+        key = f"sellometer:history:{ext_id}"
+        self.redis.lpush(key, json.dumps(record))
+        self.redis.ltrim(key, 0, keep - 1)
+
+    def get_sellometer_history(self, ext_id: str, limit: int = 50) -> list[dict]:
+        """Return the rep's final sellometer records, newest first."""
+        raw = self.redis.lrange(f"sellometer:history:{ext_id}", 0, limit - 1)
+        return [json.loads(r) for r in raw]
