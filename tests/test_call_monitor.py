@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from src.redis_store import CallStore
 from src.call_monitor import (
     process_telephony_event,
+    _fetch_active_call_sids,
     _fetch_active_session_events,
     _load_ext_display_map,
     _reconcile_active_sessions,
@@ -467,6 +468,108 @@ def test_active_ext_ids_records_only_connected_parties(store):
     # but only the answered rep is recorded as connected.
     rung = store.get_rep_current_call("121")
     assert rung is not None and rung["sessionId"] == "s-ring"
+
+
+# ---------------------------------------------------------------- multi-leg end detection
+def test_multileg_session_stays_active_while_any_leg_live(store, fake_redis):
+    """A stale leg going Gone in parties[0] must not end the session while
+    the rep is still talking. (Prod: overview flapped reps to idle mid-call.)"""
+    parties = [
+        {"status": {"code": "Gone"}, "direction": "Outbound",
+         "extensionId": "999", "to": {}, "from": {}},
+        {"status": {"code": "Answered"}, "direction": "Outbound",
+         "extensionId": "576959052",
+         "to": {"extensionNumber": "119"}, "from": {}},
+    ]
+    process_telephony_event(make_event("s-m", "Answered", parties=parties),
+                            store, monitored_extensions=["576959052"])
+    assert fake_redis.sismember("calls:active", "s-m")
+    call = store.get_call("s-m")
+    assert call["status"] == "Answered"      # rep leg preferred over parties[0]
+    assert call["activeExtIds"] == ["576959052"]
+    assert call.get("lastEventAt")           # reconcile age guard needs this
+
+
+def test_session_completes_only_when_all_legs_ended(store, fake_redis):
+    process_telephony_event(make_event("s-m", "Answered"), store)
+    parties = [
+        {"status": {"code": "Gone"}, "extensionId": "999", "to": {}, "from": {}},
+        {"status": {"code": "Disconnected"}, "extensionId": "119", "to": {}, "from": {}},
+    ]
+    process_telephony_event(make_event("s-m", "Answered", parties=parties), store)
+    assert not fake_redis.sismember("calls:active", "s-m")
+    assert store.get_call("s-m")["status"] == "Disconnected"
+
+
+# ---------------------------------------------------------------- ring-proof pointers
+def test_ringing_session_does_not_steal_pointer_from_live_call(store, fake_redis):
+    """A queue ring must not repoint a rep who is connected on another call —
+    it flipped the overview to idle and switched the rep's live dashboard
+    away from the in-progress transcript."""
+    live = [{"status": {"code": "Answered"}, "direction": "Outbound",
+             "extensionId": "576959052",
+             "to": {"extensionNumber": "119"}, "from": {}}]
+    process_telephony_event(make_event("s-live", "Answered", parties=live), store)
+    assert fake_redis.get("rep:576959052:current") == "s-live"
+
+    ring = [{"status": {"code": "Proceeding"}, "direction": "Inbound",
+             "extensionId": "576959052", "to": {}, "from": {}}]
+    process_telephony_event(make_event("s-ring", "Proceeding", parties=ring), store)
+    assert fake_redis.get("rep:576959052:current") == "s-live"
+
+
+def test_answering_a_new_call_does_take_pointer(store, fake_redis):
+    live = [{"status": {"code": "Answered"}, "direction": "Outbound",
+             "extensionId": "576959052",
+             "to": {"extensionNumber": "119"}, "from": {}}]
+    process_telephony_event(make_event("s-old", "Answered", parties=live), store)
+    process_telephony_event(make_event("s-old", "Disconnected",
+                                       parties=[{"status": {"code": "Disconnected"},
+                                                 "extensionId": "576959052",
+                                                 "to": {}, "from": {}}]), store)
+    process_telephony_event(make_event("s-new", "Answered", parties=live), store)
+    assert fake_redis.get("rep:576959052:current") == "s-new"
+
+
+def test_connected_rep_pointer_moves_to_newly_answered_session(store, fake_redis):
+    """Answering a second call (connected leg on the new session) DOES move
+    the pointer even though the old session is still active (e.g. on hold)."""
+    live_old = [{"status": {"code": "Hold"}, "extensionId": "576959052",
+                 "to": {}, "from": {}}]
+    process_telephony_event(make_event("s-old", "Hold", parties=live_old), store)
+    live_new = [{"status": {"code": "Answered"}, "extensionId": "576959052",
+                 "to": {"extensionNumber": "119"}, "from": {}}]
+    process_telephony_event(make_event("s-new", "Answered", parties=live_new), store)
+    assert fake_redis.get("rep:576959052:current") == "s-new"
+
+
+# ---------------------------------------------------------------- periodic reconcile
+def test_fetch_active_call_sids(store):
+    platform = _mock_platform({"/active-calls": {"records": [
+        {"telephonySessionId": "s-1"}, {"id": "no-sid"},
+    ]}})
+    assert _fetch_active_call_sids(platform) == {"s-1"}
+
+
+def test_fetch_active_call_sids_none_on_failure(store):
+    platform = _mock_platform({"/active-calls": RuntimeError("RC down")})
+    assert _fetch_active_call_sids(platform) is None
+
+
+def test_reconcile_skips_sessions_with_recent_events(store, fake_redis):
+    """RC's active-calls listing can lag on brand-new calls; a session that
+    produced an event in the last two minutes must survive the sweep."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 7, 3, 18, 0, tzinfo=timezone.utc)
+    store.store_call("s-new", {"sessionId": "s-new", "status": "Answered",
+                               "to": {"extensionId": "119"},
+                               "lastEventAt": (now - timedelta(seconds=30)).isoformat()})
+    store.store_call("s-old", {"sessionId": "s-old", "status": "Answered",
+                               "to": {"extensionId": "120"},
+                               "lastEventAt": (now - timedelta(seconds=300)).isoformat()})
+    _reconcile_active_sessions(store, set(), now=now)
+    assert fake_redis.sismember("calls:active", "s-new")
+    assert not fake_redis.sismember("calls:active", "s-old")
 
 
 # ---------------------------------------------------------------- supervision resilience

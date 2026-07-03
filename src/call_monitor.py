@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from ringcentral import SDK
 from ringcentral.websocket.web_socket_client import WebSocketEvents
@@ -60,14 +61,26 @@ def process_telephony_event(event: dict, store: CallStore,
     if not parties:
         return
 
-    # Primary party drives state storage (back-compat with Phase 1 behavior).
     party = parties[0]
-    status = party.get("status", {}).get("code", "Unknown")
     direction = party.get("direction", "Unknown")
     from_info = party.get("from", {})
     to_info = party.get("to", {})
 
+    # Displayed status prefers the monitored rep's own leg: on multi-leg
+    # sessions parties[0] is often a queue leg or a stale earlier leg whose
+    # state says nothing about whether the rep is talking.
+    status = party.get("status", {}).get("code", "Unknown")
+    if monitored_extensions:
+        for p in parties:
+            p_ext = (p.get("extensionId")
+                     or (p.get("to") or {}).get("extensionId")
+                     or (p.get("from") or {}).get("extensionId"))
+            if p_ext and p_ext in monitored_extensions:
+                status = p.get("status", {}).get("code", status)
+                break
+
     rep_first_name = _resolve_rep_first_name(parties, monitored_extensions, ext_display_map)
+    connected_ext_ids = _connected_ext_ids(parties)
 
     call_data = {
         "sessionId": session_id,
@@ -78,10 +91,16 @@ def process_telephony_event(event: dict, store: CallStore,
         "rep_first_name": rep_first_name,
         # Reps whose own leg is connected right now (drives the overview's
         # on-call state; excludes rung-but-unanswered simulring legs).
-        "activeExtIds": _connected_ext_ids(parties),
+        "activeExtIds": connected_ext_ids,
+        # Age guard for the periodic reconcile: RC's active-calls listing can
+        # lag on brand-new calls, so only event-silent sessions get swept.
+        "lastEventAt": datetime.now(timezone.utc).isoformat(),
     }
 
-    if status in END_STATUSES:
+    # A session ends only when EVERY leg has ended: one stale leg going Gone
+    # in parties[0] must not flap a still-talking rep to idle.
+    statuses = [p.get("status", {}).get("code", "Unknown") for p in parties]
+    if all(s in END_STATUSES for s in statuses):
         logger.info("Call ended: %s (status=%s)", session_id, status)
         store.complete_call(session_id)
     else:
@@ -93,14 +112,19 @@ def process_telephony_event(event: dict, store: CallStore,
         # Point rep:{extId}:current at this session for EVERY extensionId
         # seen, not just the primary party — otherwise the dashboard at
         # ?rep=<doug> fetches a stale earlier call because Doug's leg was
-        # never the primary party.
+        # never the primary party. BUT a merely-ringing session must not
+        # steal the pointer from a call the rep is connected to: queue
+        # simulrings would flap the overview to idle and switch the rep's
+        # live dashboard away from the in-progress transcript.
         for p in parties:
             for ext_id in filter(None, [
                 p.get("extensionId"),
                 (p.get("to")   or {}).get("extensionId"),
                 (p.get("from") or {}).get("extensionId"),
             ]):
-                store.set_rep_pointer(ext_id, session_id)
+                if ext_id in connected_ext_ids \
+                        or not _pointer_holds_live_call(store, ext_id, session_id):
+                    store.set_rep_pointer(ext_id, session_id)
 
     # Supervision trigger — two-pass scan over ALL monitored parties.
     # START wins over STOP: one monitored rep's ended leg (an abandoned
@@ -143,6 +167,18 @@ def process_telephony_event(event: dict, store: CallStore,
     elif ended:
         logger.info("Supervision STOP %s (rep %s)", session_id, ended[0])
         asyncio.create_task(sidecar.stop_supervision(session_id))
+
+
+def _pointer_holds_live_call(store: CallStore, ext_id: str,
+                             new_session_id: str) -> bool:
+    """True when rep:{ext_id}:current points at a DIFFERENT session the rep
+    is actively connected to — i.e. repointing would hijack a live call."""
+    current = store.get_rep_current_call(ext_id)
+    if not current or current.get("sessionId") == new_session_id:
+        return False
+    if ext_id not in (current.get("activeExtIds") or []):
+        return False
+    return store.is_active(current["sessionId"])
 
 
 def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
@@ -193,19 +229,67 @@ def _fetch_active_session_events(platform) -> tuple[list[dict], set[str]] | None
     return events, active_sids
 
 
-def _reconcile_active_sessions(store: CallStore, rc_active_sids: set[str]) -> None:
+def _fetch_active_call_sids(platform) -> set[str] | None:
+    """Just the RC-active session ids (no per-session detail fetches), for the
+    periodic reconcile. None means the listing failed — callers must skip."""
+    try:
+        records = platform.get(
+            "/restapi/v1.0/account/~/active-calls",
+            {"perPage": 100, "view": "Simple"},
+        ).json_dict().get("records", [])
+    except Exception as e:
+        logger.warning("Active-calls listing failed: %s", e)
+        return None
+    return {r["telephonySessionId"] for r in records if r.get("telephonySessionId")}
+
+
+def _reconcile_active_sessions(store: CallStore, rc_active_sids: set[str],
+                               min_age_seconds: int = 120,
+                               now: datetime | None = None) -> None:
     """Complete Redis-active sessions that RingCentral no longer reports.
 
-    End events that fire while the WS is down are lost forever; without this,
-    those sessions stay 'Answered' in calls:active indefinitely — frozen
-    dashboards, unbounded sellometer timelines, and no finalization.
-    Completing via the normal path runs the extraction grace window, so
-    downstream final passes (extraction, sellometer history) still happen.
+    End events that fire while the WS is down (or are simply dropped) are
+    lost forever; without this, those sessions stay 'Answered' in
+    calls:active indefinitely — frozen dashboards, unbounded sellometer
+    timelines, and no finalization. Completing via the normal path runs the
+    extraction grace window, so downstream final passes (extraction,
+    sellometer history) still happen.
+
+    Sessions with an event in the last `min_age_seconds` are spared: RC's
+    active-calls listing can lag on brand-new calls, and a live call must
+    never be swept over listing latency. Missing lastEventAt (legacy or
+    expired state) counts as old.
     """
+    now = now or datetime.now(timezone.utc)
     for sid in store.active_session_ids():
-        if sid not in rc_active_sids:
-            logger.info("Reconcile: completing stale session %s (not in RC active set)", sid)
-            store.complete_call(sid)
+        if sid in rc_active_sids:
+            continue
+        last_event_at = (store.get_call(sid) or {}).get("lastEventAt")
+        if last_event_at:
+            try:
+                age = (now - datetime.fromisoformat(last_event_at)).total_seconds()
+                if age < min_age_seconds:
+                    continue
+            except ValueError:
+                pass  # unparseable timestamp counts as old
+        logger.info("Reconcile: completing stale session %s (not in RC active set)", sid)
+        store.complete_call(sid)
+
+
+async def _run_reconcile_loop(platform, store: CallStore,
+                              interval: float = 60.0) -> None:
+    """Periodic zombie sweep while a WS session is up. Missed end events now
+    heal in ~a minute instead of waiting for the next WS reconnect."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            sids = await asyncio.to_thread(_fetch_active_call_sids, platform)
+            if sids is not None:
+                _reconcile_active_sessions(store, sids)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Reconcile loop failed")
 
 
 def _load_ext_number_map(platform) -> dict[str, str]:
@@ -332,9 +416,14 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
                         )
                 _reconcile_active_sessions(store, rc_active_sids)
 
-            await _run_ws_session(sdk, event_filters, store, sidecar=sidecar,
-                                  ext_number_map=ext_number_map,
-                                  ext_display_map=ext_display_map)
+            reconcile_task = asyncio.create_task(
+                _run_reconcile_loop(platform, store))
+            try:
+                await _run_ws_session(sdk, event_filters, store, sidecar=sidecar,
+                                      ext_number_map=ext_number_map,
+                                      ext_display_map=ext_display_map)
+            finally:
+                reconcile_task.cancel()
             backoff = 1  # reset on clean exit
         except Exception as e:
             logger.warning("WebSocket session ended: %s. Reconnecting in %ds...", e, backoff)

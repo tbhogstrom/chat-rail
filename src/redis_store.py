@@ -31,6 +31,10 @@ class CallStore:
             return None
         return json.loads(raw)
 
+    def is_active(self, session_id: str) -> bool:
+        """True while the session is in the active set."""
+        return bool(self.redis.sismember("calls:active", session_id))
+
     def active_session_ids(self) -> list[str]:
         """Session IDs currently in the active set (no grace-window entries).
 
