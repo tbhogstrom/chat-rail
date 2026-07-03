@@ -31,6 +31,14 @@ class CallStore:
             return None
         return json.loads(raw)
 
+    def active_session_ids(self) -> list[str]:
+        """Session IDs currently in the active set (no grace-window entries).
+
+        Unlike list_active_calls, includes sessions whose state key has
+        expired — the reconcile sweep must be able to complete those too.
+        """
+        return list(self.redis.smembers("calls:active"))
+
     def list_active_calls(self) -> list[dict]:
         """Return state for all active calls."""
         session_ids = self.redis.smembers("calls:active")

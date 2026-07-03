@@ -102,42 +102,47 @@ def process_telephony_event(event: dict, store: CallStore,
             ]):
                 store.set_rep_pointer(ext_id, session_id)
 
-    # Supervision trigger — scan all parties for a monitored rep.
+    # Supervision trigger — two-pass scan over ALL monitored parties.
+    # START wins over STOP: one monitored rep's ended leg (an abandoned
+    # simulring leg, a colleague dropping off a conference) must not kill
+    # supervision while another monitored rep is still on the call. The
+    # bridge 409s duplicate starts, so re-sending START on snapshot
+    # hydration is also how supervision RESUMES after a WS reconnect.
     if not (sidecar and monitored_extensions):
         return
     scanned = []
+    answered = []   # (ext_id, ext_number) for monitored reps currently Answered
+    ended = []      # ext_ids for monitored reps whose leg has ended
     for p in parties:
         p_status = p.get("status", {}).get("code", "")
         p_ext_id = (p.get("extensionId")
                     or p.get("to", {}).get("extensionId")
                     or p.get("from", {}).get("extensionId"))
         scanned.append((p_ext_id, p_status))
-    logger.debug("Supervision scan %s: parties=%s monitored=%s",
-                 session_id, scanned, monitored_extensions)
-    for p in parties:
-        p_status = p.get("status", {}).get("code", "")
-        p_ext_id = (p.get("extensionId")
-                    or p.get("to", {}).get("extensionId")
-                    or p.get("from", {}).get("extensionId"))
         if not p_ext_id or p_ext_id not in monitored_extensions:
             continue
-        if p_status in END_STATUSES:
-            logger.info("Supervision STOP %s (rep %s)", session_id, p_ext_id)
-            asyncio.create_task(sidecar.stop_supervision(session_id))
-            return
         if p_status == "Answered":
             p_ext_number = (p.get("to", {}).get("extensionNumber")
                             or p.get("from", {}).get("extensionNumber"))
             if not p_ext_number and ext_number_map:
                 p_ext_number = ext_number_map.get(p_ext_id)
             if p_ext_number:
-                logger.info("Supervision START %s (rep %s, ext number %s)",
-                            session_id, p_ext_id, p_ext_number)
-                asyncio.create_task(sidecar.start_supervision(session_id, p_ext_number))
-                return
+                answered.append((p_ext_id, p_ext_number))
             else:
                 logger.warning("Supervision match %s but no ext_number for rep %s",
                                session_id, p_ext_id)
+        elif p_status in END_STATUSES:
+            ended.append(p_ext_id)
+    logger.debug("Supervision scan %s: parties=%s monitored=%s",
+                 session_id, scanned, monitored_extensions)
+    if answered:
+        ext_id, ext_number = answered[0]
+        logger.info("Supervision START %s (rep %s, ext number %s)",
+                    session_id, ext_id, ext_number)
+        asyncio.create_task(sidecar.start_supervision(session_id, ext_number))
+    elif ended:
+        logger.info("Supervision STOP %s (rep %s)", session_id, ended[0])
+        asyncio.create_task(sidecar.stop_supervision(session_id))
 
 
 def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
@@ -146,14 +151,20 @@ def _is_monitored(ext_id: str, monitored: list[str] | None) -> bool:
     return ext_id in monitored
 
 
-def _fetch_active_session_events(platform) -> list[dict]:
-    """Return WS-shaped events for every telephony session currently in progress.
+def _fetch_active_session_events(platform) -> tuple[list[dict], set[str]] | None:
+    """Return (WS-shaped events, RC-active session ids) for in-progress calls,
+    or None when the active-calls listing itself fails.
 
     RC's WebSocket only emits state-transition events, so calls that are already
     live when we connect (or that transition during a WS reconnect gap) are
     invisible. We hydrate by listing active calls, then fetching each session's
     full detail — which comes back in the same shape the WS emits — and wrapping
     it as `{"body": ...}` so callers can reuse `process_telephony_event`.
+
+    The id set includes sessions whose detail fetch failed (they are still
+    RC-active) and is the authority for `_reconcile_active_sessions`. None —
+    as opposed to an empty set — means "unknown": callers must skip the
+    reconcile rather than treat every Redis-active call as stale.
     """
     try:
         records = platform.get(
@@ -162,13 +173,15 @@ def _fetch_active_session_events(platform) -> list[dict]:
         ).json_dict().get("records", [])
     except Exception as e:
         logger.warning("Active-calls snapshot failed: %s", e)
-        return []
+        return None
 
     events = []
+    active_sids = set()
     for rec in records:
         sid = rec.get("telephonySessionId")
         if not sid:
             continue
+        active_sids.add(sid)
         try:
             session = platform.get(
                 f"/restapi/v1.0/account/~/telephony/sessions/{sid}"
@@ -177,7 +190,22 @@ def _fetch_active_session_events(platform) -> list[dict]:
             logger.warning("Session fetch failed for %s: %s", sid, e)
             continue
         events.append({"body": session})
-    return events
+    return events, active_sids
+
+
+def _reconcile_active_sessions(store: CallStore, rc_active_sids: set[str]) -> None:
+    """Complete Redis-active sessions that RingCentral no longer reports.
+
+    End events that fire while the WS is down are lost forever; without this,
+    those sessions stay 'Answered' in calls:active indefinitely — frozen
+    dashboards, unbounded sellometer timelines, and no finalization.
+    Completing via the normal path runs the extraction grace window, so
+    downstream final passes (extraction, sellometer history) still happen.
+    """
+    for sid in store.active_session_ids():
+        if sid not in rc_active_sids:
+            logger.info("Reconcile: completing stale session %s (not in RC active set)", sid)
+            store.complete_call(sid)
 
 
 def _load_ext_number_map(platform) -> dict[str, str]:
@@ -288,15 +316,21 @@ async def run_monitor(store: CallStore, sidecar=None) -> None:
             logger.info("Persisted roster for %d monitored rep(s)", len(roster))
 
             snapshot = _fetch_active_session_events(platform)
-            if snapshot:
-                logger.info("Hydrating %d in-progress call(s) from snapshot", len(snapshot))
-                for event in snapshot:
-                    process_telephony_event(
-                        event, store, sidecar=sidecar,
-                        monitored_extensions=Config.MONITORED_EXTENSIONS,
-                        ext_number_map=ext_number_map,
-                        ext_display_map=ext_display_map,
-                    )
+            if snapshot is None:
+                logger.warning("Active-calls snapshot unavailable — "
+                               "skipping hydration and session reconcile")
+            else:
+                events, rc_active_sids = snapshot
+                if events:
+                    logger.info("Hydrating %d in-progress call(s) from snapshot", len(events))
+                    for event in events:
+                        process_telephony_event(
+                            event, store, sidecar=sidecar,
+                            monitored_extensions=Config.MONITORED_EXTENSIONS,
+                            ext_number_map=ext_number_map,
+                            ext_display_map=ext_display_map,
+                        )
+                _reconcile_active_sessions(store, rc_active_sids)
 
             await _run_ws_session(sdk, event_filters, store, sidecar=sidecar,
                                   ext_number_map=ext_number_map,

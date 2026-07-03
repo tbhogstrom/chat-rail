@@ -184,6 +184,16 @@ def test_get_recent_calls_empty_returns_empty_list(store):
     assert store.get_recent_calls() == []
 
 
+def test_active_session_ids(fake_redis):
+    store = CallStore(fake_redis)
+    assert store.active_session_ids() == []
+    store.store_call("s-1", {"sessionId": "s-1", "to": {"extensionId": "119"}})
+    store.store_call("s-2", {"sessionId": "s-2", "to": {"extensionId": "120"}})
+    assert sorted(store.active_session_ids()) == ["s-1", "s-2"]
+    store.complete_call("s-1")
+    assert store.active_session_ids() == ["s-2"]
+
+
 def test_call_events_roundtrip_and_idempotent(fake_redis):
     store = CallStore(fake_redis)
     assert store.get_call_events("s-1") == {}

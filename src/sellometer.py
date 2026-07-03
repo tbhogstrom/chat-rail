@@ -80,14 +80,16 @@ def compute_score(config: dict, extracted: dict | None, events: dict | None) -> 
 
 
 def advance_timeline(timeline: list[int], started_at: datetime, now: datetime,
-                     score: int) -> list[int]:
+                     score: int, max_minutes: int = 480) -> list[int]:
     """Append `score` once per completed call minute not yet recorded.
 
     timeline[i] is the score at the end of call minute i. Gaps (a stalled
-    worker) are back-filled with the score known at catch-up time. Mutates
-    and returns `timeline`.
+    worker) are back-filled with the score known at catch-up time. Growth is
+    capped at `max_minutes` (default 8h) so a zombie session whose end event
+    was lost cannot grow the stored JSON unboundedly. Mutates and returns
+    `timeline`.
     """
-    elapsed = int((now - started_at).total_seconds() // 60)
+    elapsed = min(int((now - started_at).total_seconds() // 60), max_minutes)
     while len(timeline) < elapsed:
         timeline.append(score)
     return timeline

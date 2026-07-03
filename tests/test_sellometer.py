@@ -113,3 +113,12 @@ def test_advance_timeline_no_duplicate_within_same_minute():
 def test_advance_timeline_backfills_gap_with_current_score():
     # Worker stalled for 3 minutes: missing minutes get the catch-up score.
     assert advance_timeline([10], _t(0), _t(4.2), score=40) == [10, 40, 40, 40]
+
+
+def test_advance_timeline_caps_growth():
+    """A zombie session (end event lost) must not grow the timeline
+    unboundedly — capped at 8 hours of call minutes."""
+    tl = advance_timeline([], _t(0), _t(1000), score=10)
+    assert len(tl) == 480
+    assert advance_timeline(tl, _t(0), _t(2000), score=20) == tl
+    assert len(tl) == 480

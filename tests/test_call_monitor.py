@@ -7,6 +7,7 @@ from src.call_monitor import (
     process_telephony_event,
     _fetch_active_session_events,
     _load_ext_display_map,
+    _reconcile_active_sessions,
     build_monitored_roster,
 )
 
@@ -204,7 +205,7 @@ def _mock_platform(routes: dict):
 
 def test_fetch_active_session_events_empty_when_no_active_calls():
     platform = _mock_platform({"/active-calls": {"records": []}})
-    assert _fetch_active_session_events(platform) == []
+    assert _fetch_active_session_events(platform) == ([], set())
 
 
 def test_fetch_active_session_events_returns_ws_shaped_events():
@@ -226,7 +227,7 @@ def test_fetch_active_session_events_returns_ws_shaped_events():
                          "from": {"extensionId": "120"}}],
         },
     })
-    events = _fetch_active_session_events(platform)
+    events, _sids = _fetch_active_session_events(platform)
     assert len(events) == 2
     assert events[0]["body"]["telephonySessionId"] == "s-1"
     assert events[0]["body"]["parties"][0]["status"]["code"] == "Answered"
@@ -235,7 +236,7 @@ def test_fetch_active_session_events_returns_ws_shaped_events():
 
 def test_fetch_active_session_events_skips_records_without_session_id():
     platform = _mock_platform({"/active-calls": {"records": [{"id": "no-sid"}]}})
-    assert _fetch_active_session_events(platform) == []
+    assert _fetch_active_session_events(platform) == ([], set())
 
 
 def test_fetch_active_session_events_continues_when_one_session_fetch_fails():
@@ -251,14 +252,16 @@ def test_fetch_active_session_events_continues_when_one_session_fetch_fails():
                          "to": {"extensionId": "119"}, "from": {}}],
         },
     })
-    events = _fetch_active_session_events(platform)
+    events, _sids = _fetch_active_session_events(platform)
     assert len(events) == 1
     assert events[0]["body"]["telephonySessionId"] == "s-good"
 
 
-def test_fetch_active_session_events_returns_empty_when_api_fails():
+def test_fetch_active_session_events_returns_none_when_api_fails():
+    """None (not empty) — a failed snapshot must skip the reconcile, or it
+    would complete every live call in Redis."""
     platform = _mock_platform({"/active-calls": RuntimeError("RC down")})
-    assert _fetch_active_session_events(platform) == []
+    assert _fetch_active_session_events(platform) is None
 
 
 @pytest.mark.asyncio
@@ -281,7 +284,8 @@ async def test_snapshot_hydration_triggers_supervision_for_monitored_rep(store):
     sidecar = MagicMock()
     sidecar.start_supervision = AsyncMock()
 
-    for ev in _fetch_active_session_events(platform):
+    events, _sids = _fetch_active_session_events(platform)
+    for ev in events:
         process_telephony_event(ev, store, sidecar=sidecar,
                                 monitored_extensions=["576959052"])
     await asyncio.sleep(0)
@@ -463,3 +467,107 @@ def test_active_ext_ids_records_only_connected_parties(store):
     # but only the answered rep is recorded as connected.
     rung = store.get_rep_current_call("121")
     assert rung is not None and rung["sessionId"] == "s-ring"
+
+
+# ---------------------------------------------------------------- supervision resilience
+@pytest.mark.asyncio
+async def test_supervision_survives_other_monitored_leg_ending(store):
+    """A monitored colleague's ended leg must not stop supervision while
+    another monitored rep is still Answered — START wins over STOP.
+    (Prod incident 2026-07-03: an ended leg for rep A killed supervision of
+    the whole session while rep B was mid-call.)"""
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    sidecar.stop_supervision = AsyncMock()
+    parties = [
+        {"status": {"code": "Disconnected"}, "direction": "Outbound",
+         "extensionId": "731501052", "to": {}, "from": {}},
+        {"status": {"code": "Answered"}, "direction": "Outbound",
+         "extensionId": "576959052",
+         "to": {"extensionNumber": "108"}, "from": {}},
+    ]
+    process_telephony_event(make_event("s-multi", "Answered", parties=parties),
+                            store, sidecar=sidecar,
+                            monitored_extensions=["731501052", "576959052"])
+    await asyncio.sleep(0)
+    sidecar.stop_supervision.assert_not_called()
+    sidecar.start_supervision.assert_awaited_once_with("s-multi", "108")
+
+
+@pytest.mark.asyncio
+async def test_supervision_stops_only_when_no_monitored_leg_active(store):
+    """STOP still fires when every monitored leg has ended, even if
+    unmonitored parties remain on the session."""
+    sidecar = MagicMock()
+    sidecar.start_supervision = AsyncMock()
+    sidecar.stop_supervision = AsyncMock()
+    parties = [
+        {"status": {"code": "Disconnected"}, "direction": "Outbound",
+         "extensionId": "576959052", "to": {}, "from": {}},
+        {"status": {"code": "Answered"}, "direction": "Outbound",
+         "extensionId": "999", "to": {}, "from": {}},
+    ]
+    process_telephony_event(make_event("s-solo", "Answered", parties=parties),
+                            store, sidecar=sidecar,
+                            monitored_extensions=["576959052"])
+    await asyncio.sleep(0)
+    sidecar.start_supervision.assert_not_called()
+    sidecar.stop_supervision.assert_awaited_once_with("s-solo")
+
+
+# ---------------------------------------------------------------- session reconcile
+def test_fetch_active_session_events_returns_events_and_sids():
+    platform = _mock_platform({
+        "/active-calls": {"records": [{"telephonySessionId": "s-1"}]},
+        "/telephony/sessions/s-1": {
+            "telephonySessionId": "s-1",
+            "parties": [{"status": {"code": "Answered"},
+                         "to": {"extensionId": "119"}, "from": {}}],
+        },
+    })
+    events, sids = _fetch_active_session_events(platform)
+    assert len(events) == 1
+    assert sids == {"s-1"}
+
+
+def test_fetch_active_sids_include_detail_fetch_failures():
+    """A session whose detail fetch fails yields no hydration event but MUST
+    still count as RC-active — otherwise the reconcile would complete a live
+    call over a transient fetch error."""
+    platform = _mock_platform({
+        "/active-calls": {"records": [
+            {"telephonySessionId": "s-bad"},
+            {"telephonySessionId": "s-good"},
+        ]},
+        "/telephony/sessions/s-bad": RuntimeError("boom"),
+        "/telephony/sessions/s-good": {
+            "telephonySessionId": "s-good",
+            "parties": [{"status": {"code": "Answered"},
+                         "to": {"extensionId": "119"}, "from": {}}],
+        },
+    })
+    events, sids = _fetch_active_session_events(platform)
+    assert [e["body"]["telephonySessionId"] for e in events] == ["s-good"]
+    assert sids == {"s-bad", "s-good"}
+
+
+def test_reconcile_completes_sessions_missing_from_rc(store, fake_redis):
+    store.store_call("s-zombie", {"sessionId": "s-zombie", "status": "Answered",
+                                  "to": {"extensionId": "119"}})
+    store.store_call("s-live", {"sessionId": "s-live", "status": "Answered",
+                                "to": {"extensionId": "120"}})
+    _reconcile_active_sessions(store, {"s-live"})
+    assert not fake_redis.sismember("calls:active", "s-zombie")
+    assert fake_redis.sismember("calls:active", "s-live")
+    assert store.get_call("s-zombie")["status"] == "Disconnected"
+    # Completed via the normal path: enters the extraction grace window so
+    # downstream extraction/sellometer finalization still runs.
+    assert fake_redis.sismember("calls:recently-ended", "s-zombie")
+
+
+def test_reconcile_noop_when_rc_and_redis_agree(store, fake_redis):
+    store.store_call("s-live", {"sessionId": "s-live", "status": "Answered",
+                                "to": {"extensionId": "120"}})
+    _reconcile_active_sessions(store, {"s-live"})
+    assert fake_redis.sismember("calls:active", "s-live")
+    assert store.get_call("s-live")["status"] == "Answered"
