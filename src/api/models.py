@@ -32,3 +32,7 @@ class DealReq(BaseModel):
     description: str
     stage: str | None = None
     scope: str | None = None
+
+
+class CallEventReq(BaseModel):
+    event: str  # a sellometer event id, e.g. "sales-script-opened"

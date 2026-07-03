@@ -485,3 +485,56 @@ def test_get_ui_config_includes_service_agreement_tool(client):
     assert r.status_code == 200
     urls = [t["url"] for t in r.json()["claudeTools"]]
     assert "https://claude.ai/project/019eb27a-006c-7101-8f28-2a205e8c9fee" in urls
+
+
+# -- sell-o-meter endpoints --------------------------------------------------
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_post_call_event_records_and_is_idempotent(client, store):
+    resp = client.post("/api/calls/s-1/events", headers=auth_header(),
+                       json={"event": "sales-script-opened"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "event": "sales-script-opened"}
+    first_ts = store.get_call_events("s-1")["sales-script-opened"]
+
+    resp = client.post("/api/calls/s-1/events", headers=auth_header(),
+                       json={"event": "sales-script-opened"})
+    assert resp.status_code == 200
+    assert store.get_call_events("s-1")["sales-script-opened"] == first_ts
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_post_call_event_unknown_id_400(client):
+    resp = client.post("/api/calls/s-1/events", headers=auth_header(),
+                       json={"event": "made-up-event"})
+    assert resp.status_code == 400
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_sellometer_404_until_computed(client):
+    resp = client.get("/api/calls/s-1/sellometer", headers=auth_header())
+    assert resp.status_code == 404
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_sellometer_returns_stored_json(client, store):
+    data = {"score": 25, "max": 100, "checkpoints": [],
+            "startedAt": "2026-07-03T14:00:00+00:00", "timeline": [0, 25],
+            "updatedAt": "2026-07-03T14:02:00+00:00"}
+    store.set_sellometer("s-1", data)
+    resp = client.get("/api/calls/s-1/sellometer", headers=auth_header())
+    assert resp.status_code == 200
+    assert resp.json() == data
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_get_sellometer_history(client, store):
+    store.push_sellometer_final("576959052", {"sessionId": "s-1", "score": 40})
+    store.push_sellometer_final("576959052", {"sessionId": "s-2", "score": 70})
+    resp = client.get("/api/calls/reps/576959052/sellometer-history?limit=1",
+                      headers=auth_header())
+    assert resp.status_code == 200
+    records = resp.json()["records"]
+    assert len(records) == 1
+    assert records[0]["sessionId"] == "s-2"

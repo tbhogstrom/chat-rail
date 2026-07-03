@@ -1,12 +1,14 @@
+from datetime import datetime, timezone
 from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException
 from src.redis_store import CallStore
 from src.api.auth import verify_api_key
-from src.api.models import ContactLookupReq, ContactProps, ContactSearchReq, DealReq
+from src.api.models import CallEventReq, ContactLookupReq, ContactProps, ContactSearchReq, DealReq
 from src.config import Config
 from src.hubspot_client import HubSpotClient, HubSpotError
 from src.scope_summarizer import summarize_scope, ScopeSummarizerError
+from src.sellometer import known_event_ids, load_config as load_sellometer_config
 
 router = APIRouter(prefix="/api/calls", dependencies=[Depends(verify_api_key)])
 hubspot_router = APIRouter(prefix="/api/hubspot", dependencies=[Depends(verify_api_key)])
@@ -155,6 +157,37 @@ def get_extracted(session_id: str):
     if data is None:
         raise HTTPException(status_code=404, detail="No extraction data for session")
     return data
+
+
+@router.post("/{session_id}/events")
+def post_call_event(session_id: str, body: CallEventReq):
+    """Record a sell-o-meter checkpoint event (e.g. a dashboard button click).
+    Idempotent — the first timestamp for an event wins."""
+    try:
+        config = load_sellometer_config()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Sellometer config unavailable")
+    if body.event not in known_event_ids(config):
+        raise HTTPException(status_code=400, detail=f"Unknown event: {body.event}")
+    store = get_store()
+    store.add_call_event(session_id, body.event,
+                         datetime.now(timezone.utc).isoformat())
+    return {"ok": True, "event": body.event}
+
+
+@router.get("/{session_id}/sellometer")
+def get_sellometer(session_id: str):
+    store = get_store()
+    data = store.get_sellometer(session_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="No sellometer data for session")
+    return data
+
+
+@router.get("/reps/{ext_id}/sellometer-history")
+def get_sellometer_history(ext_id: str, limit: int = 50):
+    store = get_store()
+    return {"records": store.get_sellometer_history(ext_id, limit=min(limit, 500))}
 
 
 @router.post("/{session_id}/scope-summary")
