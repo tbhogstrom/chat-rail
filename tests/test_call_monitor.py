@@ -558,12 +558,12 @@ def test_fetch_active_call_sids_none_on_failure(store):
 
 def test_reconcile_skips_sessions_with_recent_events(store, fake_redis):
     """RC's active-calls listing can lag on brand-new calls; a session that
-    produced an event in the last two minutes must survive the sweep."""
+    produced an event in the last 30 seconds must survive the sweep."""
     from datetime import datetime, timedelta, timezone
     now = datetime(2026, 7, 3, 18, 0, tzinfo=timezone.utc)
     store.store_call("s-new", {"sessionId": "s-new", "status": "Answered",
                                "to": {"extensionId": "119"},
-                               "lastEventAt": (now - timedelta(seconds=30)).isoformat()})
+                               "lastEventAt": (now - timedelta(seconds=20)).isoformat()})
     store.store_call("s-old", {"sessionId": "s-old", "status": "Answered",
                                "to": {"extensionId": "120"},
                                "lastEventAt": (now - timedelta(seconds=300)).isoformat()})
@@ -674,3 +674,56 @@ def test_reconcile_noop_when_rc_and_redis_agree(store, fake_redis):
     _reconcile_active_sessions(store, {"s-live"})
     assert fake_redis.sismember("calls:active", "s-live")
     assert store.get_call("s-live")["status"] == "Answered"
+
+
+def test_process_event_clears_rep_pointer_on_disconnected(store):
+    """When all parties disconnect, the rep's pointer to that session is cleared."""
+    store.store_call("s-1", {
+        "sessionId": "s-1", "status": "Answered", "direction": "Inbound",
+        "from": {"phoneNumber": "+15125551234"}, "to": {"extensionId": "119"},
+        "activeExtIds": ["119"],
+    })
+    store.set_rep_pointer("119", "s-1")
+
+    # Process a Disconnected event for the call
+    event = {
+        "body": {
+            "telephonySessionId": "s-1",
+            "parties": [
+                {
+                    "extensionId": "119",
+                    "status": {"code": "Disconnected"},
+                    "direction": "Inbound",
+                    "from": {"phoneNumber": "+15125551234"},
+                    "to": {"extensionId": "119"},
+                }
+            ],
+        }
+    }
+    process_telephony_event(event, store)
+
+    # Pointer should be cleared
+    assert store.get_rep_current_call("119") is None
+
+
+def test_reconcile_active_sessions_uses_30s_grace_by_default(store):
+    """Stale calls are swept if they haven't fired an event in 30+ seconds."""
+    import datetime
+    from src.call_monitor import _reconcile_active_sessions
+
+    # Session that fired an event 31 seconds ago
+    old_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=31)
+    store.store_call("s-old", {
+        "sessionId": "s-old",
+        "status": "Answered",
+        "lastEventAt": old_time.isoformat(),
+    })
+
+    # Simulate RC says this session is no longer active
+    rc_active_sids = set()
+
+    # Should sweep the old call
+    _reconcile_active_sessions(store, rc_active_sids, now=datetime.datetime.now(datetime.timezone.utc))
+
+    assert store.get_call("s-old") is not None  # state key still exists with TTL
+    assert "s-old" not in store.active_session_ids()  # removed from active set

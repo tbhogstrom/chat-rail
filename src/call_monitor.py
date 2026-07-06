@@ -103,6 +103,18 @@ def process_telephony_event(event: dict, store: CallStore,
     if all(s in END_STATUSES for s in statuses):
         logger.info("Call ended: %s (status=%s)", session_id, status)
         store.complete_call(session_id)
+        # Clear pointers for all reps who were on this call so they show as idle.
+        # Extract all extensionIds involved in this call.
+        for p in parties:
+            for ext_id in filter(None, [
+                p.get("extensionId"),
+                (p.get("to") or {}).get("extensionId"),
+                (p.get("from") or {}).get("extensionId"),
+            ]):
+                current = store.get_rep_current_call(ext_id)
+                if current and current.get("sessionId") == session_id:
+                    store.clear_rep_pointer(ext_id)
+                    logger.debug("Cleared pointer for %s (call ended)", ext_id)
     else:
         # One call fires many mid-state events (Proceeding -> Setup -> Answered
         # -> Hold -> ...); at INFO they drown out the interesting lines.
@@ -244,7 +256,7 @@ def _fetch_active_call_sids(platform) -> set[str] | None:
 
 
 def _reconcile_active_sessions(store: CallStore, rc_active_sids: set[str],
-                               min_age_seconds: int = 120,
+                               min_age_seconds: int = 30,
                                now: datetime | None = None) -> None:
     """Complete Redis-active sessions that RingCentral no longer reports.
 
@@ -277,7 +289,7 @@ def _reconcile_active_sessions(store: CallStore, rc_active_sids: set[str],
 
 
 async def _run_reconcile_loop(platform, store: CallStore,
-                              interval: float = 60.0) -> None:
+                              interval: float = 30.0) -> None:
     """Periodic zombie sweep while a WS session is up. Missed end events now
     heal in ~a minute instead of waiting for the next WS reconnect."""
     while True:
