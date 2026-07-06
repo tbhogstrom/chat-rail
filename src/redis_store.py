@@ -129,6 +129,10 @@ class CallStore:
         """
         self.redis.set(f"rep:{extension_id}:current", session_id)
 
+    def clear_rep_pointer(self, extension_id: str) -> None:
+        """Remove the rep's current-call pointer, marking them as not in a call."""
+        self.redis.delete(f"rep:{extension_id}:current")
+
     def set_rep_roster(self, roster: dict[str, dict]) -> None:
         """Persist the monitored-rep roster ({extId: {"name", "number"}}).
 

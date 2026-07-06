@@ -232,3 +232,11 @@ def test_sellometer_history_limit(fake_redis):
     for i in range(5):
         store.push_sellometer_final("119", {"sessionId": f"s-{i}"})
     assert len(store.get_sellometer_history("119", limit=2)) == 2
+
+
+def test_clear_rep_pointer(store, fake_redis):
+    store.store_call("s-1", {"sessionId": "s-1", "status": "Answered", "to": {"extensionId": "119"}})
+    assert store.get_rep_current_call("119") is not None
+
+    store.clear_rep_pointer("119")
+    assert store.get_rep_current_call("119") is None
