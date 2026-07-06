@@ -69,6 +69,7 @@
     mark.hl-state,
     mark.hl-zip         { border-bottom-color: #2dd4bf; }   /* teal  */
     mark.hl-company     { border-bottom-color: #fb923c; }   /* orange */
+    mark.hl[data-field] { cursor: pointer; }
 
     /* Native text selection should be easy to see across highlights. */
     #transcript-body ::selection { background: #3b4a80; color: var(--text); }
@@ -212,7 +213,10 @@
           const primary = matching.reduce((a, b) =>
             (a.end - a.start) <= (b.end - b.start) ? a : b
           );
-          html += `<mark class="hl hl-${primary.ruleId}">${escapeHtml(chunk)}</mark>`;
+          const dataAttrs =
+            ` data-value="${escapeHtml(primary.value ?? "")}"` +
+            (primary.field ? ` data-field="${escapeHtml(primary.field)}"` : "");
+          html += `<mark class="hl hl-${primary.ruleId}"${dataAttrs}>${escapeHtml(chunk)}</mark>`;
         }
       }
       return html;
@@ -275,6 +279,19 @@
         const key = inp.parentElement.dataset.key;
         touchedFields.add(key);
       });
+    });
+
+    // ---- click a highlight to populate its field ----
+    document.getElementById("transcript-body").addEventListener("click", (e) => {
+      const mark = e.target.closest("mark.hl[data-field]");
+      if (!mark) return;
+      const key = mark.dataset.field;
+      const input = getFieldInput(key);
+      if (!input) return;
+      input.value = mark.dataset.value || "";
+      touchedFields.add(key);
+      const dot = getFieldDot(key);
+      if (dot && input.value) dot.classList.add("green");
     });
 
     // ---- polling ----
