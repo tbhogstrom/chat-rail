@@ -2,7 +2,7 @@ from pathlib import Path
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from src.redis_store import CallStore
-from src.api.routes import router, hubspot_router, set_store
+from src.api.routes import router, hubspot_router, set_store, set_platform
 from src.agreement_tool.routes import agreement_router
 from src.config import Config
 from src.api.session import make_token, valid_token
@@ -37,7 +37,7 @@ color:#0a0f1f;font-weight:600;font-size:14px;cursor:pointer}}.err{{color:#f87171
 <button type="submit">Sign in</button></form></body></html>"""
 
 
-def create_app(store: CallStore | None = None) -> FastAPI:
+def create_app(store: CallStore | None = None, platform=None) -> FastAPI:
     app = FastAPI(title="SFW Call Intelligence Bridge", version="1.0.0")
 
     @app.middleware("http")
@@ -52,6 +52,9 @@ def create_app(store: CallStore | None = None) -> FastAPI:
 
     if store:
         set_store(store)
+
+    if platform:
+        set_platform(platform)
 
     app.include_router(router)
     app.include_router(hubspot_router)

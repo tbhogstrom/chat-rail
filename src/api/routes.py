@@ -27,12 +27,25 @@ def get_store() -> CallStore:
     return _store
 
 
+_platform = None
+
+
+def set_platform(platform):
+    global _platform
+    _platform = platform
+
+
+def get_platform():
+    return _platform
+
+
 def _get_rc_active_session_ids(platform=None) -> set[str] | None:
     """Fetch the set of currently-active session IDs from RingCentral.
 
     Returns None if the fetch fails (to allow fallback to cached state).
     Returns empty set if RC has no active calls.
     """
+    platform = platform or get_platform()
     if not platform:
         return None
     try:
@@ -101,7 +114,8 @@ def get_reps():
     store = get_store()
     roster = store.get_rep_roster()
     # Try to fetch actual RC active calls; fall back to cached state if it fails.
-    rc_active_ids = _get_rc_active_session_ids()
+    platform = get_platform()
+    rc_active_ids = _get_rc_active_session_ids(platform)
     if rc_active_ids is None:
         active_ids = {c.get("sessionId") for c in store.list_active_calls()}
     else:
