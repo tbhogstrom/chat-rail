@@ -166,7 +166,11 @@ def normalize_for_phone(tokens: list[Token]) -> SpanMappedText:
         resolve_tens()
         digits = "".join(run_digits)
         if len(digits) >= _MIN_SPOKEN_RUN:
-            segments.append((digits, run_tokens[0].start, run_tokens[-1].end))
+            # Span the number itself — trim trailing/leading whitespace and
+            # filler tokens the run absorbed (e.g. "three please" -> not "three ").
+            core = [t for t in run_tokens
+                    if not t.surface.isspace() and t.surface.lower() not in _PHONE_FILLER]
+            segments.append((digits, core[0].start, core[-1].end))
         else:
             for t in run_tokens:
                 segments.append((t.surface, t.start, t.end))

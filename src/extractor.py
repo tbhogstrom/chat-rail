@@ -7,12 +7,27 @@ acceptable since transcripts stay under ~10KB.
 import re
 from typing import Callable
 
+from src.spoken import tokenize_with_spans, normalize_for_email, normalize_for_phone
+
 # ---------------------------------------------------------------- EMAIL
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_EMAIL_TLD_RE = re.compile(r"\.(com|net|org|edu|gov|io|co|us)$", re.IGNORECASE)
+
+
+def _clean_email(match: str) -> str:
+    """Trim sentence-final dots the domain regex may swallow ('x.com.')."""
+    return match.rstrip(".")
+
 
 def extract_email(text: str) -> str | None:
+    # First pass: literal emails in the original text.
     matches = _EMAIL_RE.findall(text)
-    return matches[-1] if matches else None
+    if matches:
+        return _clean_email(matches[-1])
+    # Second pass: spoken emails ("john at gmail dot com"), TLD-guarded.
+    normalized = normalize_for_email(tokenize_with_spans(text)).text
+    spoken = [m for m in _EMAIL_RE.findall(normalized) if _EMAIL_TLD_RE.search(m)]
+    return _clean_email(spoken[-1]) if spoken else None
 
 
 # ---------------------------------------------------------------- PHONE
@@ -25,54 +40,19 @@ _PHONE_NUM_RE = re.compile(
     """,
     re.VERBOSE,
 )
-_SPOKEN_DIGITS = {
-    "zero": "0", "oh": "0", "o": "0",
-    "one": "1", "two": "2", "three": "3", "four": "4",
-    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
-}
-
-def _normalize_spoken_numbers(text: str) -> str:
-    """Convert runs of >=7 spelled digit-words in a row to raw digits.
-
-    Conservative: only replaces when we see at least 7 digit-words back to back
-    (matches a phone number), to avoid mangling normal prose like "four dollars".
-    Whitespace between digit-words doesn't break the run; any other word does.
-    When a run is too short, we drop those words from the returned string —
-    that's fine because callers only use this pass to find phone numbers that
-    the plain-digit pass missed.
-    """
-    tokens = re.split(r"(\W+)", text.lower())
-    out: list[str] = []
-    run: list[str] = []
-    for tok in tokens:
-        if tok in _SPOKEN_DIGITS:
-            run.append(_SPOKEN_DIGITS[tok])
-            continue
-        # Whitespace-only separators don't break a digit-word run.
-        if tok == "" or tok.strip() == "":
-            continue
-        if len(run) >= 7:
-            out.append("".join(run))
-        run = []
-        out.append(tok)
-    if len(run) >= 7:
-        out.append("".join(run))
-    return "".join(out)
+def _valid_nanp(area: str, exchange: str) -> bool:
+    """NANP: area code and exchange must start with 2-9."""
+    return area[0] in "23456789" and exchange[0] in "23456789"
 
 
 def extract_phone(text: str) -> str | None:
-    """Return the most recent 10-digit phone number seen in the text."""
-    # First pass: plain-digit formats in original text.
-    matches = _PHONE_NUM_RE.findall(text)
-    if matches:
-        a, b, c = matches[-1]
-        return a + b + c
-    # Second pass: spelled-out numbers (e.g., "five oh three four four four one one two three").
-    normalized = _normalize_spoken_numbers(text)
-    matches = _PHONE_NUM_RE.findall(normalized)
-    if matches:
-        a, b, c = matches[-1]
-        return a + b + c
+    """Return the most recent valid 10-digit phone number seen in the text."""
+    for source in (text, normalize_for_phone(tokenize_with_spans(text)).text):
+        valid = [(a, b, c) for a, b, c in _PHONE_NUM_RE.findall(source)
+                 if _valid_nanp(a, b)]
+        if valid:
+            a, b, c = valid[-1]
+            return a + b + c
     return None
 
 
@@ -240,14 +220,35 @@ _NAME_STOPWORDS = {
     "there", "guys", "everyone", "everybody", "you", "back", "man", "dude",
     "sir", "madam", "maam", "folks", "yall", "again", "now", "buddy",
     "honey", "babe", "friend", "sweetie", "boss",
+    # familiar-address nicknames
+    "bubba", "bro", "brother", "chief", "pal", "champ", "captain", "mister", "doc",
+    # weekdays / months (Deepgram title-cases these; greeting regex grabs them)
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+}
+
+
+_FIELD_BY_RULE = {
+    "caller-name": "firstname",
+    "rep-name": None,
+    "email": "email",
+    "phone": "phone",
+    "company": "company",
+    "address": "address",
+    "city": "city",
+    "state": "state",
+    "zip": "zip",
 }
 
 
 def find_highlights(text: str, rep_first_name: str | None = None) -> list[dict]:
-    """Return every span of the transcript worth visually highlighting.
+    """Return every span worth highlighting, each as
+    `{ruleId, start, end, text, value, field}` sorted by start offset.
 
-    Output: list of `{"ruleId", "start", "end", "text"}` sorted by start offset.
-    The dashboard wraps each span in a `<mark>` styled by ruleId.
+    The dashboard wraps each span in a `<mark>` styled by ruleId. `value` is the
+    canonical value a click drops into `field`; `field` is the extracted-dict key
+    to populate (None for rep-name, which must never fill the caller field).
 
     Name handling: any detected first-name match is tagged `rep-name` when it
     equals `rep_first_name` (case-insensitive), otherwise `caller-name`. With
@@ -255,9 +256,16 @@ def find_highlights(text: str, rep_first_name: str | None = None) -> list[dict]:
     """
     out: list[dict] = []
 
-    def add(rule_id: str, start: int, end: int) -> None:
-        out.append({"ruleId": rule_id, "start": start,
-                    "end": end, "text": text[start:end]})
+    def add(rule_id: str, start: int, end: int, value: str | None = None) -> None:
+        surface = text[start:end]
+        out.append({
+            "ruleId": rule_id,
+            "start": start,
+            "end": end,
+            "text": surface,
+            "value": value if value is not None else surface,
+            "field": _FIELD_BY_RULE.get(rule_id),
+        })
 
     def add_name(start: int, end: int) -> None:
         token = text[start:end]
@@ -274,14 +282,30 @@ def find_highlights(text: str, rep_first_name: str | None = None) -> list[dict]:
     for m in _GREETING_NAME_RE.finditer(text):
         add_name(*m.span(1))
 
-    # Email.
+    # Email — literal pass.
     for m in _EMAIL_RE.finditer(text):
-        add("email", *m.span(0))
+        add("email", m.start(0), m.end(0), _clean_email(m.group(0)))
+    # Email — spoken pass, mapped back to the original text.
+    smt_email = normalize_for_email(tokenize_with_spans(text))
+    for m in _EMAIL_RE.finditer(smt_email.text):
+        if not _EMAIL_TLD_RE.search(m.group(0)):
+            continue
+        span = smt_email.map_span(m.start(0), m.end(0))
+        if span:
+            add("email", span[0], span[1], _clean_email(m.group(0)))
 
-    # Phone — plain-digit pass. Spoken-number phones are skipped for highlighting
-    # since the normalized string has different offsets than the original text.
+    # Phone — literal pass (NANP-guarded).
     for m in _PHONE_NUM_RE.finditer(text):
-        add("phone", *m.span(0))
+        if _valid_nanp(m.group(1), m.group(2)):
+            add("phone", m.start(0), m.end(0), m.group(1) + m.group(2) + m.group(3))
+    # Phone — spoken pass, mapped back to the original text.
+    smt_phone = normalize_for_phone(tokenize_with_spans(text))
+    for m in _PHONE_NUM_RE.finditer(smt_phone.text):
+        if not _valid_nanp(m.group(1), m.group(2)):
+            continue
+        span = smt_phone.map_span(m.start(0), m.end(0))
+        if span:
+            add("phone", span[0], span[1], m.group(1) + m.group(2) + m.group(3))
 
     # Company, address — regexes already capture the useful span in group 1.
     for m in _COMPANY_RE.finditer(text):
@@ -295,15 +319,26 @@ def find_highlights(text: str, rep_first_name: str | None = None) -> list[dict]:
     for m in _CITY_IN_CITY_RE.finditer(text):
         add("city", *m.span(1))
 
-    # State — abbreviation in address context, or full name anywhere.
+    # State — abbreviation in address context, or full name (value -> abbrev).
     for m in _STATE_ABBREV_IN_CONTEXT_RE.finditer(text):
         add("state", *m.span(1))
     for m in _STATE_FULLNAME_RE.finditer(text):
-        add("state", *m.span(1))
+        add("state", m.start(1), m.end(1),
+            _STATE_NAME_TO_ABBREV[m.group(1).lower()])
 
     # ZIP.
     for m in _ZIP_RE.finditer(text):
         add("zip", *m.span(1))
 
-    out.sort(key=lambda h: h["start"])
-    return out
+    # Dedup identical spans (e.g. a typed number caught by literal + spoken pass).
+    seen: set[tuple[str, int, int]] = set()
+    deduped: list[dict] = []
+    for h in out:
+        key = (h["ruleId"], h["start"], h["end"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(h)
+
+    deduped.sort(key=lambda h: h["start"])
+    return deduped

@@ -31,6 +31,18 @@ def test_email_takes_latest():
     assert extract_email(txt) == "new@b.com"
 
 
+def test_email_spoken_form():
+    assert extract_email("reach me at john at gmail dot com ok") == "john@gmail.com"
+
+
+def test_email_trailing_dot_trimmed():
+    assert extract_email("write to me at jim@x.com.") == "jim@x.com"
+
+
+def test_email_spoken_requires_known_tld():
+    assert extract_email("let's meet me at four") is None
+
+
 # --- phone ---
 def test_phone_paren_format():
     assert extract_phone("Call me at (503) 444-1123 anytime") == "5034441123"
@@ -50,6 +62,22 @@ def test_phone_spelled_out():
 
 def test_phone_none():
     assert extract_phone("No digits here friend.") is None
+
+
+def test_phone_spoken_teens_tens():
+    assert extract_phone("five oh three four four four eleven twenty three") == "5034441123"
+
+
+def test_phone_spoken_double():
+    assert extract_phone("five oh three double four four one one two three") == "5034441123"
+
+
+def test_phone_spoken_with_filler():
+    assert extract_phone("five oh three um four four four one one two three") == "5034441123"
+
+
+def test_phone_rejects_invalid_nanp():
+    assert extract_phone("Call 155-444-1123 now") is None
 
 
 # --- firstname ---
@@ -221,6 +249,63 @@ def test_highlights_sorted_by_start():
     hl = find_highlights(text)
     starts = [h["start"] for h in hl]
     assert starts == sorted(starts)
+
+
+def test_highlights_ignore_nickname_names():
+    hl = find_highlights("Hey, bubba. Hi, chief. Hello bro.")
+    names = [h for h in hl if h["ruleId"] in ("caller-name", "rep-name")]
+    assert names == []
+
+
+def test_highlights_ignore_weekday_names():
+    hl = find_highlights("Hi, Monday. This is Friday.")
+    names = [h for h in hl if h["ruleId"] in ("caller-name", "rep-name")]
+    assert names == []
+
+
+def test_highlights_have_value_and_field():
+    text = "Reach me at john@example.com or 503-444-1123."
+    hl = find_highlights(text)
+    email = next(h for h in hl if h["ruleId"] == "email")
+    phone = next(h for h in hl if h["ruleId"] == "phone")
+    assert email["value"] == "john@example.com"
+    assert email["field"] == "email"
+    assert phone["value"] == "5034441123"
+    assert phone["field"] == "phone"
+
+
+def test_highlights_rep_name_has_null_field():
+    hl = find_highlights("This is Doug.", rep_first_name="Doug")
+    rep = next(h for h in hl if h["ruleId"] == "rep-name")
+    assert rep["field"] is None
+    caller = find_highlights("Hi, Jim.")
+    jim = next(h for h in caller if h["ruleId"] == "caller-name")
+    assert jim["field"] == "firstname"
+
+
+def test_email_spoken_maps_to_real_span():
+    text = "my email is bob at x dot com thanks"
+    hl = find_highlights(text)
+    emails = [h for h in hl if h["ruleId"] == "email"]
+    assert len(emails) == 1
+    assert emails[0]["value"] == "bob@x.com"
+    assert text[emails[0]["start"]:emails[0]["end"]] == "bob at x dot com"
+
+
+def test_highlights_spoken_phone_mapped_and_valued():
+    text = "call me at five oh three four four four one one two three please"
+    hl = find_highlights(text)
+    phones = [h for h in hl if h["ruleId"] == "phone"]
+    assert len(phones) == 1
+    assert phones[0]["value"] == "5034441123"
+    assert text[phones[0]["start"]:phones[0]["end"]] == \
+        "five oh three four four four one one two three"
+
+
+def test_highlights_no_duplicate_typed_phone():
+    hl = find_highlights("call 503-444-1123")
+    phones = [h for h in hl if h["ruleId"] == "phone"]
+    assert len(phones) == 1
 
 
 def test_highlights_all_rule_ids_are_known():
