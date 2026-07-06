@@ -12,6 +12,7 @@ import logging
 
 import fakeredis
 import uvicorn
+from ringcentral import SDK
 from upstash_redis import Redis
 
 from src.api.main import create_app
@@ -43,7 +44,18 @@ async def main():
         store = CallStore(fakeredis.FakeRedis(decode_responses=True))
         logger.info("Using fakeredis (in-process). Sidecar transcripts won't be visible here.")
 
-    app = create_app(store)
+    # Initialize RingCentral platform for API to use live RC data
+    platform = None
+    if Config.RC_CLIENT_ID and Config.RC_CLIENT_SECRET and Config.RC_JWT:
+        try:
+            sdk = SDK(Config.RC_CLIENT_ID, Config.RC_CLIENT_SECRET, Config.RC_SERVER)
+            platform = sdk.platform()
+            platform.login(jwt=Config.RC_JWT)
+            logger.info("RingCentral platform authenticated for API")
+        except Exception as e:
+            logger.warning("Failed to authenticate RingCentral platform for API: %s", e)
+
+    app = create_app(store, platform=platform)
 
     sidecar = None
     if Config.SOFTPHONE_BRIDGE_URL and Config.SOFTPHONE_BRIDGE_API_KEY:
