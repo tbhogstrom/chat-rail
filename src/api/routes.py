@@ -27,6 +27,25 @@ def get_store() -> CallStore:
     return _store
 
 
+def _get_rc_active_session_ids(platform=None) -> set[str] | None:
+    """Fetch the set of currently-active session IDs from RingCentral.
+
+    Returns None if the fetch fails (to allow fallback to cached state).
+    Returns empty set if RC has no active calls.
+    """
+    if not platform:
+        return None
+    try:
+        records = platform.get(
+            "/restapi/v1.0/account/~/active-calls",
+            {"perPage": 100, "view": "Simple"},
+        ).json_dict().get("records", [])
+        return {r["telephonySessionId"] for r in records if r.get("telephonySessionId")}
+    except Exception:
+        # Fetch failed — caller should fall back to cached active_ids
+        return None
+
+
 @lru_cache(maxsize=1)
 def _hs_client() -> HubSpotClient:
     if not Config.HUBSPOT_PRIVATE_APP_TOKEN:
@@ -81,13 +100,21 @@ def get_active_calls():
 def get_reps():
     store = get_store()
     roster = store.get_rep_roster()
+    # Try to fetch actual RC active calls; fall back to cached state if it fails.
+    rc_active_ids = _get_rc_active_session_ids()
+    if rc_active_ids is None:
+        active_ids = {c.get("sessionId") for c in store.list_active_calls()}
+    else:
+        active_ids = rc_active_ids
+
     metrics = store.get_rep_metrics()
-    active_ids = {c.get("sessionId") for c in store.list_active_calls()}
+    active_ids_set = set(active_ids) if active_ids else set()
+
     reps = []
     for ext_id in Config.MONITORED_EXTENSIONS:
         entry = roster.get(ext_id) or {}
         call = store.get_rep_current_call(ext_id)
-        on_call = _rep_on_call(call, ext_id, active_ids)
+        on_call = _rep_on_call(call, ext_id, active_ids_set)
         reps.append({
             "extId": ext_id,
             "name": entry.get("name") or f"Ext {ext_id}",

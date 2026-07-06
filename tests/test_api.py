@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, Mock
 from src.redis_store import CallStore
 from src.api.main import create_app
 import respx
@@ -545,3 +545,32 @@ def test_get_sellometer_history_limit_zero_rejected(client):
     resp = client.get("/api/calls/reps/576959052/sellometer-history?limit=0",
                       headers=auth_header())
     assert resp.status_code == 422
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+@patch("src.api.routes.Config.MONITORED_EXTENSIONS", ["119", "121"])
+def test_get_reps_uses_rc_active_calls_when_available(client, store):
+    """When RC active-calls fetch succeeds, use it as source of truth for on-call state."""
+    store.set_rep_roster({
+        "119": {"name": "Doug Stoker", "number": "119"},
+        "121": {"name": "Travis Watters", "number": "121"},
+    })
+    store.store_call("s-1", {
+        "sessionId": "s-1", "status": "Answered", "direction": "Inbound",
+        "from": {"phoneNumber": "+15125551234"}, "to": {"extensionId": "119"},
+        "activeExtIds": ["119"],
+    })
+
+    # Mock RC platform to return that s-1 is still active
+    mock_platform = Mock()
+    mock_platform.get.return_value.json_dict.return_value = {
+        "records": [{"telephonySessionId": "s-1"}]
+    }
+
+    with patch("src.api.routes._get_rc_active_session_ids") as mock_get_rc:
+        mock_get_rc.return_value = {"s-1"}
+        resp = client.get("/api/calls/reps", headers=auth_header())
+
+    reps = resp.json()["reps"]
+    doug = [r for r in reps if r["extId"] == "119"][0]
+    assert doug["onCall"] is True
