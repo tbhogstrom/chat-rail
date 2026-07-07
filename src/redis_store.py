@@ -1,4 +1,6 @@
 import json
+import time
+from datetime import datetime, timezone
 
 # Seconds a disconnected call stays eligible for extraction after it ends.
 # Short calls (voicemails) flush their final Deepgram transcript to Redis at or
@@ -120,6 +122,39 @@ class CallStore:
         if raw is None:
             return None
         return json.loads(raw)
+
+    def list_recent_sessions(self, rep=None, window_seconds=3600):
+        """Sessions that produced a transcript within the last `window_seconds`,
+        newest-first. Rows: {sessionId, startTime(ISO|None), live, state}.
+        Skips sessions whose state has expired; filters by rep when given."""
+        now_ms = int(time.time() * 1000)
+        min_ms = now_ms - window_seconds * 1000
+        # Housekeeping: drop members older than the window so the set stays small.
+        self.redis.zremrangebyscore("sessions:recent", 0, min_ms - 1)
+        sids = self.redis.zrevrangebyscore("sessions:recent", "+inf", min_ms)
+        if not sids:
+            return []
+        active = set(self.redis.smembers("calls:active"))
+        rows = []
+        for sid in sids:
+            raw = self.redis.get(f"call:{sid}:state")
+            if not raw:
+                continue
+            state = json.loads(raw) if isinstance(raw, str) else raw
+            if rep is not None and state.get("repExtId") != rep:
+                continue
+            score = self.redis.zscore("sessions:recent", sid)
+            start_iso = (
+                datetime.fromtimestamp(score / 1000, tz=timezone.utc).isoformat()
+                if score is not None else None
+            )
+            rows.append({
+                "sessionId": sid,
+                "startTime": start_iso,
+                "live": sid in active,
+                "state": state,
+            })
+        return rows
 
     def set_rep_pointer(self, extension_id: str, session_id: str) -> None:
         """Point rep:{extension_id}:current at this session.

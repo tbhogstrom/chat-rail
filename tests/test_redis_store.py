@@ -240,3 +240,47 @@ def test_clear_rep_pointer(store, fake_redis):
 
     store.clear_rep_pointer("119")
     assert store.get_rep_current_call("119") is None
+
+
+def _seed_recent(fake_redis, sid, score_ms, state):
+    fake_redis.zadd("sessions:recent", {sid: score_ms})
+    fake_redis.set(f"call:{sid}:state", json.dumps(state))
+
+
+def test_list_recent_sessions_windows_and_orders(store, fake_redis):
+    import time
+    now = int(time.time() * 1000)
+    _seed_recent(fake_redis, "s-old", now - 2 * 3600 * 1000, {"sessionId": "s-old"})  # >1h ago
+    _seed_recent(fake_redis, "s-a", now - 600 * 1000, {"sessionId": "s-a", "direction": "Inbound"})
+    _seed_recent(fake_redis, "s-b", now - 60 * 1000, {"sessionId": "s-b", "direction": "Outbound"})
+    rows = store.list_recent_sessions()
+    ids = [r["sessionId"] for r in rows]
+    assert ids == ["s-b", "s-a"]              # newest first, s-old excluded
+    assert rows[0]["startTime"] is not None
+    assert rows[0]["state"]["direction"] == "Outbound"
+
+
+def test_list_recent_sessions_filters_by_rep(store, fake_redis):
+    import time
+    now = int(time.time() * 1000)
+    _seed_recent(fake_redis, "s-119", now - 30 * 1000, {"sessionId": "s-119", "repExtId": "119"})
+    _seed_recent(fake_redis, "s-118", now - 20 * 1000, {"sessionId": "s-118", "repExtId": "118"})
+    rows = store.list_recent_sessions(rep="119")
+    assert [r["sessionId"] for r in rows] == ["s-119"]
+
+
+def test_list_recent_sessions_skips_expired_state(store, fake_redis):
+    import time
+    now = int(time.time() * 1000)
+    fake_redis.zadd("sessions:recent", {"s-gone": now - 10 * 1000})  # in set, no state
+    rows = store.list_recent_sessions()
+    assert rows == []
+
+
+def test_list_recent_sessions_marks_live(store, fake_redis):
+    import time
+    now = int(time.time() * 1000)
+    _seed_recent(fake_redis, "s-live", now - 10 * 1000, {"sessionId": "s-live"})
+    fake_redis.sadd("calls:active", "s-live")
+    rows = store.list_recent_sessions()
+    assert rows[0]["live"] is True
