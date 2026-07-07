@@ -100,6 +100,7 @@
   <header>
     <h1>SFW Call Bridge — Dashboard</h1>
     <div id="session-info">Waiting for call…</div>
+    <select id="session-picker" title="View a recent session"></select>
   </header>
   <main>
     <section id="transcript">
@@ -120,6 +121,7 @@
         <div id="sm-bar"><div id="sm-fill"></div></div>
         <div id="sm-chips"></div>
       </div>
+      <div id="extract-form">
       <h2>Caller Info</h2>
       <div class="field" data-key="firstname">
         <span class="dot"></span><label>First name</label><input type="text" />
@@ -162,6 +164,7 @@
         <button id="copy" class="secondary">📋 Copy Transcript</button>
         <div id="claude-tools"></div>
       </div>
+      </div>
     </section>
   </main>
   <div id="toast"></div>
@@ -178,6 +181,8 @@
     // Auth is the shared-password session cookie (sent automatically, same-origin).
 
     let currentSid = null;
+    let pinnedSid = null;                        // non-null => viewing a past session
+    const initialSession = params.get("session"); // deep-link target, if any
     let lastContactId = null;
     let lastTranscript = "";
     let lastHighlights = [];
@@ -294,8 +299,70 @@
       if (dot && input.value) dot.classList.add("green");
     });
 
+    // ---- recent-session picker + pinned (read-only) past view ----
+    function fmtTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+
+    async function populateSessionPicker() {
+      let rows = [];
+      try {
+        const r = await fetch(`/api/calls/sessions/recent?rep=${encodeURIComponent(repId)}`,
+          { headers: authHeaders() });
+        if (r.ok) rows = (await r.json()).sessions || [];
+      } catch (_) { return; }  // keep last options on a transient error
+      const sel = document.getElementById("session-picker");
+      const keep = pinnedSid || "live";
+      sel.innerHTML = "";
+      sel.add(new Option("🔴 Live — current call", "live"));
+      for (const s of rows) {
+        const label = `${fmtTime(s.startTime)} · ${s.direction || "?"} · ${s.number || "unknown"}`
+          + (s.live ? " (live)" : "");
+        sel.add(new Option(label, s.sessionId));
+      }
+      sel.value = keep;
+      if (sel.value !== keep) sel.value = "live";  // pinned session aged out of the window
+    }
+
+    async function pinSession(sid) {
+      pinnedSid = sid;
+      document.getElementById("extract-form").hidden = true;
+      lastHighlights = [];  // past view shows plain transcript, no live field highlights
+      try {
+        const tr = await fetch(`/api/calls/${encodeURIComponent(sid)}/transcript`,
+          { headers: authHeaders() });
+        lastTranscript = tr.ok ? ((await tr.json()).transcript || "") : "";
+      } catch (_) { lastTranscript = ""; }
+      lastRenderedTranscript = null;  // force redraw
+      renderTranscript();
+      if (!lastTranscript) {
+        document.getElementById("transcript-body").textContent = "Transcript expired.";
+      }
+      document.getElementById("session-info").textContent = `Viewing past session • ${sid}`;
+      const smEl = document.getElementById("sellometer");
+      try {
+        const sm = await fetch(`/api/calls/${encodeURIComponent(sid)}/sellometer`,
+          { headers: authHeaders() });
+        if (sm.ok) renderSellometer(await sm.json());
+        else smEl.hidden = true;
+      } catch (_) { smEl.hidden = true; }
+    }
+
+    function goLive() {
+      pinnedSid = null;
+      document.getElementById("extract-form").hidden = false;
+      currentSid = null;
+      lastTranscript = "";
+      lastRenderedTranscript = null;
+      renderTranscript();
+      pollCall();
+    }
+
     // ---- polling ----
     async function pollCall() {
+      if (pinnedSid) return;   // pinned to a past session — don't follow the live call
       try {
         const r = await fetch(`/api/calls/latest?rep=${encodeURIComponent(repId)}`, {
           headers: authHeaders(),
@@ -318,7 +385,7 @@
     }
 
     async function pollExtracted() {
-      if (!currentSid) return;
+      if (pinnedSid || !currentSid) return;
       try {
         const r = await fetch(`/api/calls/${encodeURIComponent(currentSid)}/extracted`, {
           headers: authHeaders(),
@@ -343,7 +410,7 @@
     }
 
     async function pollSellometer() {
-      if (!currentSid) return;
+      if (pinnedSid || !currentSid) return;
       try {
         const r = await fetch(`/api/calls/${encodeURIComponent(currentSid)}/sellometer`, {
           headers: authHeaders(),
@@ -371,10 +438,19 @@
       }
     }
 
+    document.getElementById("session-picker").addEventListener("change", (e) => {
+      const v = e.target.value;
+      if (v === "live") goLive();
+      else pinSession(v);
+    });
+
     setInterval(pollCall, 2000);
     setInterval(pollExtracted, 3000);
     setInterval(pollSellometer, 3000);
-    pollCall();
+    setInterval(populateSessionPicker, 10000);
+    populateSessionPicker();
+    if (initialSession) pinSession(initialSession);
+    else pollCall();
 
     // ---- button actions ----
     function readFields() {
