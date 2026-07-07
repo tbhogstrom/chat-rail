@@ -727,3 +727,17 @@ def test_reconcile_active_sessions_uses_30s_grace_by_default(store):
 
     assert store.get_call("s-old") is not None  # state key still exists with TTL
     assert "s-old" not in store.active_session_ids()  # removed from active set
+
+
+def test_call_data_includes_rep_ext_id(fake_redis):
+    from src.redis_store import CallStore
+    from src.call_monitor import process_telephony_event
+    store = CallStore(fake_redis)
+    event = {"body": {"telephonySessionId": "s-rep", "parties": [
+        {"direction": "Inbound", "extensionId": "119",
+         "status": {"code": "Answered"},
+         "from": {"phoneNumber": "+15551234567"}, "to": {}},
+    ]}}
+    process_telephony_event(event, store, monitored_extensions={"119"})
+    call = store.get_call("s-rep")
+    assert call["repExtId"] == "119"

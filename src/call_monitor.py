@@ -70,6 +70,7 @@ def process_telephony_event(event: dict, store: CallStore,
     # sessions parties[0] is often a queue leg or a stale earlier leg whose
     # state says nothing about whether the rep is talking.
     status = party.get("status", {}).get("code", "Unknown")
+    rep_ext_id = None
     if monitored_extensions:
         for p in parties:
             p_ext = (p.get("extensionId")
@@ -77,6 +78,7 @@ def process_telephony_event(event: dict, store: CallStore,
                      or (p.get("from") or {}).get("extensionId"))
             if p_ext and p_ext in monitored_extensions:
                 status = p.get("status", {}).get("code", status)
+                rep_ext_id = p_ext
                 break
 
     rep_first_name = _resolve_rep_first_name(parties, monitored_extensions, ext_display_map)
@@ -89,6 +91,9 @@ def process_telephony_event(event: dict, store: CallStore,
         "from": from_info,
         "to": to_info,
         "rep_first_name": rep_first_name,
+        # Monitored rep's extension id — lets the recent-sessions endpoint filter
+        # by rep without guessing from activeExtIds.
+        "repExtId": rep_ext_id,
         # Reps whose own leg is connected right now (drives the overview's
         # on-call state; excludes rung-but-unanswered simulring legs).
         "activeExtIds": connected_ext_ids,
