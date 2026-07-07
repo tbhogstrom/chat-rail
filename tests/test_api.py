@@ -574,3 +574,43 @@ def test_get_reps_uses_rc_active_calls_when_available(client, store):
     reps = resp.json()["reps"]
     doug = [r for r in reps if r["extId"] == "119"][0]
     assert doug["onCall"] is True
+
+
+import time as _time
+import json as _json
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_recent_sessions_lists_and_labels(client, store, fake_redis):
+    now = int(_time.time() * 1000)
+    fake_redis.zadd("sessions:recent", {"s-1": now - 30 * 1000})
+    fake_redis.set("call:s-1:state", _json.dumps({
+        "sessionId": "s-1", "direction": "Inbound", "status": "Disconnected",
+        "repExtId": "119", "rep_first_name": "Alice",
+        "from": {"phoneNumber": "+15551234567"}, "to": {},
+    }))
+    resp = client.get("/api/calls/sessions/recent", headers=auth_header())
+    assert resp.status_code == 200
+    rows = resp.json()["sessions"]
+    assert len(rows) == 1
+    assert rows[0]["sessionId"] == "s-1"
+    assert rows[0]["repName"] == "Alice"
+    assert rows[0]["number"] == "+15551234567"
+    assert rows[0]["direction"] == "Inbound"
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_recent_sessions_rep_filter(client, store, fake_redis):
+    now = int(_time.time() * 1000)
+    for sid, ext in (("s-119", "119"), ("s-118", "118")):
+        fake_redis.zadd("sessions:recent", {sid: now - 10 * 1000})
+        fake_redis.set(f"call:{sid}:state", _json.dumps({"sessionId": sid, "repExtId": ext}))
+    rows = client.get("/api/calls/sessions/recent?rep=119", headers=auth_header()).json()["sessions"]
+    assert [r["sessionId"] for r in rows] == ["s-119"]
+
+
+@patch("src.api.auth.Config.API_KEY", API_KEY)
+def test_recent_sessions_empty(client):
+    resp = client.get("/api/calls/sessions/recent", headers=auth_header())
+    assert resp.status_code == 200
+    assert resp.json()["sessions"] == []

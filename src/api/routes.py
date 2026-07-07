@@ -154,6 +154,26 @@ def get_ui_config():
     return {"claudeTools": Config.CLAUDE_TOOLS}
 
 
+@router.get("/sessions/recent")
+def get_recent_sessions(rep: str | None = None):
+    store = get_store()
+    rows = store.list_recent_sessions(rep=rep, window_seconds=3600)
+    sessions = []
+    for r in rows:
+        state = r["state"]
+        sessions.append({
+            "sessionId": r["sessionId"],
+            "startTime": r["startTime"],
+            "repExtId": state.get("repExtId"),
+            "repName": state.get("rep_first_name"),
+            "number": _caller_number(state),
+            "direction": state.get("direction"),
+            "status": state.get("status"),
+            "live": r["live"],
+        })
+    return {"sessions": sessions}
+
+
 @router.get("/latest")
 def get_latest_call(rep: str | None = None):
     store = get_store()
