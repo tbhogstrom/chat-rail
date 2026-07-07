@@ -31,7 +31,7 @@ const softphone = new Softphone({
 await softphone.register();
 console.log("[bridge] softphone registered");
 
-const server = buildServer(softphone);
+const server = buildServer(softphone, undefined, { watchdog: true });
 await server.listen({ host: config.bridge.host, port: config.bridge.port });
 console.log(`[bridge] HTTP listening on :${config.bridge.port}`);
 

@@ -10,3 +10,12 @@ primary_region = "sjc"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"
+
+# Restart the machine if the process exits. The wedge watchdog calls exit(1)
+# when the transcription pipeline is dead (active sessions but no audio for
+# minutes); register-on-boot then re-establishes SIP + fresh Deepgram sockets.
+# Deliberately NOT using a [[services]] health check: that would attach
+# auto-stop/auto-start semantics to a bridge that must stay continuously
+# SIP-registered. The in-process watchdog is the recovery path instead.
+[[restart]]
+  policy = "always"
