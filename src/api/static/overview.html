@@ -52,6 +52,12 @@
     <div id="status">Loading…</div>
   </header>
   <main>
+    <div id="recent-transcripts-bar">
+      <label for="recent-transcripts">Recent transcripts (last hour):</label>
+      <select id="recent-transcripts">
+        <option value="">— select a call —</option>
+      </select>
+    </div>
     <div id="list"><div class="empty">Loading…</div></div>
     <h2 class="section">Recent calls</h2>
     <div id="recent"><div class="empty">Loading…</div></div>
@@ -149,6 +155,39 @@
     setInterval(pollRecent, 5000);
     poll();
     pollRecent();
+  </script>
+
+  <script>
+    // Global recent-transcripts picker: lists every rep's sessions from the last
+    // hour and deep-links into the dashboard's pinned (read-only) view.
+    async function loadRecentTranscripts() {
+      let rows = [];
+      try {
+        const r = await fetch("/api/calls/sessions/recent",
+          { headers: { "content-type": "application/json" } });
+        if (r.ok) rows = (await r.json()).sessions || [];
+      } catch (_) { return; }
+      const sel = document.getElementById("recent-transcripts");
+      sel.length = 1;  // keep the placeholder
+      for (const s of rows) {
+        const t = s.startTime ? new Date(s.startTime)
+          .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+        const label = `${t} · ${s.repName || "?"} · ${s.direction || "?"} · ${s.number || "unknown"}`;
+        const opt = new Option(label, "");
+        opt.dataset.rep = s.repExtId || "";
+        opt.dataset.sid = s.sessionId;
+        sel.add(opt);
+      }
+    }
+    document.getElementById("recent-transcripts").addEventListener("change", (e) => {
+      const opt = e.target.selectedOptions[0];
+      if (!opt || !opt.dataset.sid) return;
+      const rep = encodeURIComponent(opt.dataset.rep || "");
+      const sid = encodeURIComponent(opt.dataset.sid);
+      location.href = `/dashboard?rep=${rep}&session=${sid}`;
+    });
+    loadRecentTranscripts();
+    setInterval(loadRecentTranscripts, 15000);
   </script>
 </body>
 </html>
